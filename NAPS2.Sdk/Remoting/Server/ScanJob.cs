@@ -57,7 +57,7 @@ internal class ScanJob : IEsclScanJob
         _scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
         var options = new ScanOptions
         {
-            Device = device
+            //Device = device
             // Dpi = Math.Max(settings.XResolution, settings.YResolution),
             // BitDepth = settings.ColorMode switch
             // {
