@@ -190,7 +190,7 @@ internal class WorkerServiceAdapter
         // AMINA CHANGES
         var req = new TwainScanRequest
         {
-            //OptionsXml = options.ToXml()
+            OptionsXml = options.ToXml()
         };
         try
         {
