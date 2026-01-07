@@ -54,7 +54,7 @@ internal class ScanJob : IEsclScanJob
             _ => ContentTypes.JPEG
         };
         // AMINA CHANGES
-        _scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
+        //_scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
         var options = new ScanOptions
         {
             //Device = device
@@ -79,7 +79,7 @@ internal class ScanJob : IEsclScanJob
             // MaxQuality = ContentType == ContentTypes.PNG
         };
         // AMINA CHANGES
-        _scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
+        //_scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
 
         try
         {
