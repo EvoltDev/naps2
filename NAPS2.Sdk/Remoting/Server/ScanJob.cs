@@ -55,7 +55,7 @@ internal class ScanJob : IEsclScanJob
         // AMINA CHANGES
         var options = new ScanOptions
         {
-            // Device = device,
+            Device = device
             // Dpi = Math.Max(settings.XResolution, settings.YResolution),
             // BitDepth = settings.ColorMode switch
             // {
