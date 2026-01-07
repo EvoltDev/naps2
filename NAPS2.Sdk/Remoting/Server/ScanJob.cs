@@ -55,26 +55,26 @@ internal class ScanJob : IEsclScanJob
         // AMINA CHANGES
         var options = new ScanOptions
         {
-            Device = device
-            // Dpi = Math.Max(settings.XResolution, settings.YResolution),
-            // BitDepth = settings.ColorMode switch
-            // {
-            //     EsclColorMode.BlackAndWhite1 => BitDepth.BlackAndWhite,
-            //     EsclColorMode.Grayscale8 or EsclColorMode.Grayscale16 => BitDepth.Grayscale,
-            //     _ => BitDepth.Color
-            // },
-            // PaperSource = (settings.InputSource, settings.Duplex) switch
-            // {
-            //     (EsclInputSource.Feeder, false) => PaperSource.Feeder,
-            //     (EsclInputSource.Feeder, true) => PaperSource.Duplex,
-            //     _ => PaperSource.Flatbed
-            // },
-            // PageSize = settings.Width > 0 && settings.Height > 0
-            //     ? new PageSize(settings.Width / 300m, settings.Height / 300m, PageSizeUnit.Inch)
-            //     : PageSize.Letter,
-            // PageAlign = SnapToAlignment(settings.XOffset, settings.Width, EsclInputCaps.DEFAULT_MAX_WIDTH),
-            // Quality = settings.CompressionFactor ?? ScanOptions.DEFAULT_QUALITY,
-            // MaxQuality = ContentType == ContentTypes.PNG
+            Device = device,
+            Dpi = Math.Max(settings.XResolution, settings.YResolution),
+            BitDepth = settings.ColorMode switch
+            {
+                EsclColorMode.BlackAndWhite1 => BitDepth.BlackAndWhite,
+                EsclColorMode.Grayscale8 or EsclColorMode.Grayscale16 => BitDepth.Grayscale,
+                _ => BitDepth.Color
+            },
+            PaperSource = (settings.InputSource, settings.Duplex) switch
+            {
+                (EsclInputSource.Feeder, false) => PaperSource.Feeder,
+                (EsclInputSource.Feeder, true) => PaperSource.Duplex,
+                _ => PaperSource.Flatbed
+            },
+            PageSize = settings.Width > 0 && settings.Height > 0
+                ? new PageSize(settings.Width / 300m, settings.Height / 300m, PageSizeUnit.Inch)
+                : PageSize.Letter,
+            PageAlign = SnapToAlignment(settings.XOffset, settings.Width, EsclInputCaps.DEFAULT_MAX_WIDTH),
+            Quality = settings.CompressionFactor ?? ScanOptions.DEFAULT_QUALITY,
+            MaxQuality = ContentType == ContentTypes.PNG
         };
 
         try
