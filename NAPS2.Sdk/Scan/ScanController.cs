@@ -148,7 +148,7 @@ public class ScanController
     public IAsyncEnumerable<ProcessedImage> Scan(ScanOptions options, CancellationToken cancelToken = default)
     {
         // AMINA CHANGES
-        options = _scanOptionsValidator.ValidateAll(options, _scanningContext, true);
+        // options = _scanOptionsValidator.ValidateAll(options, _scanningContext, true);
         int pageNumber = 0;
 
         Exception? scanError = null;
