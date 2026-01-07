@@ -148,7 +148,7 @@ public class ScanController
     public IAsyncEnumerable<ProcessedImage> Scan(ScanOptions options, CancellationToken cancelToken = default)
     {
         // AMINA CHANGES
-        // options = _scanOptionsValidator.ValidateAll(options, _scanningContext, true);
+        options = _scanOptionsValidator.ValidateAll(options, _scanningContext, true);
         int pageNumber = 0;
 
         Exception? scanError = null;
@@ -167,7 +167,7 @@ public class ScanController
 
         _scanningContext.Logger.LogDebug("Scanning with {Device}", options.Device);
         // AMINA CHANGES
-        _scanningContext.Logger.LogDebug("Scan source: {Source}", options);
+        // _scanningContext.Logger.LogDebug("Scan source: {Source}", options);
         ScanStartCallback();
         return AsyncProducers.RunProducer<ProcessedImage>(async produceImage =>
         {
