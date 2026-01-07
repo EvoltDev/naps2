@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 using NAPS2.Escl;
 using NAPS2.Escl.Server;
 using NAPS2.Pdf;
@@ -53,6 +54,7 @@ internal class ScanJob : IEsclScanJob
             _ => ContentTypes.JPEG
         };
         // AMINA CHANGES
+        _scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
         var options = new ScanOptions
         {
             Device = device,
@@ -76,6 +78,8 @@ internal class ScanJob : IEsclScanJob
             Quality = settings.CompressionFactor ?? ScanOptions.DEFAULT_QUALITY,
             MaxQuality = ContentType == ContentTypes.PNG
         };
+        // AMINA CHANGES
+        _scanningContext.Logger.LogDebug($"[SCANJOB] Input device Driver: {device.Driver}, ID: {device.ID}");
 
         try
         {
