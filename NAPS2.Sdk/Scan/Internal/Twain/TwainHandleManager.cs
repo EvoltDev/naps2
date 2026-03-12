@@ -1,4 +1,4 @@
-#if !MAC
+#if !MACOS
 using NTwain;
 
 namespace NAPS2.Scan.Internal.Twain;

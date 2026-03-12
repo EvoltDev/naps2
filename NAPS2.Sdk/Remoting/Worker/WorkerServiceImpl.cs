@@ -9,7 +9,7 @@ using NAPS2.Pdf;
 using NAPS2.Scan;
 using NAPS2.Scan.Internal;
 using NAPS2.Scan.Internal.Twain;
-#if !MAC
+#if !MACOS
 using NAPS2.Scan.Internal.Wia;
 using NAPS2.Wia;
 #endif
@@ -67,7 +67,7 @@ internal class WorkerServiceImpl : WorkerService.WorkerServiceBase
 
     public override Task<Wia10NativeUiResponse> Wia10NativeUi(Wia10NativeUiRequest request, ServerCallContext context)
     {
-#if MAC
+#if MACOS
         throw new NotSupportedException();
 #else
 #if NET6_0_OR_GREATER

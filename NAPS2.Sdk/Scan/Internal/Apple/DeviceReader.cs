@@ -1,4 +1,4 @@
-#if MAC
+#if MACOS
 using System.Collections.Immutable;
 using ImageCaptureCore;
 

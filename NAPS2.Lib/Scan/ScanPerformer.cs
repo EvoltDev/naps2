@@ -4,7 +4,7 @@ using NAPS2.ImportExport;
 using NAPS2.Ocr;
 using NAPS2.Scan.Exceptions;
 using NAPS2.Scan.Internal;
-#if !MAC
+#if !MACOS
 using NAPS2.Scan.Internal.Wia;
 using NAPS2.Wia;
 #endif

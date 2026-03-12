@@ -15,7 +15,7 @@ internal class ScanDriverFactory : IScanDriverFactory
     {
         switch (options.Driver)
         {
-#if MAC
+#if MACOS
             case Driver.Apple:
                 return new Apple.AppleScanDriver(_scanningContext);
 #else
@@ -37,7 +37,7 @@ internal class ScanDriverFactory : IScanDriverFactory
             default:
                 throw new DriverNotSupportedException(
                     $"Unsupported driver: {options.Driver}. " +
-                    "Make sure you're using the right framework target (e.g. net8-macos for the Apple driver).");
+                    "Make sure you're using the right framework target (e.g. net10.0-macos26.2 for the Apple driver).");
         }
     }
 }

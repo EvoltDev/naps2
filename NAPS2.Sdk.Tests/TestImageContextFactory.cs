@@ -11,14 +11,14 @@ public static class TestImageContextFactory
             "wpf" => new NAPS2.Images.Wpf.WpfImageContext(),
 #endif
             "is" or "imagesharp" => new NAPS2.Images.ImageSharp.ImageSharpImageContext(),
-#if MAC
+#if MACOS
             "mac" => new NAPS2.Images.Mac.MacImageContext(),
 #endif
 #if LINUX
             "gtk" or "gdk" or "linux" => new NAPS2.Images.Gtk.GtkImageContext(),
 #endif
             _ =>
-#if MAC
+#if MACOS
                 new NAPS2.Images.Mac.MacImageContext()
 #elif LINUX
                 new NAPS2.Images.Gtk.GtkImageContext()

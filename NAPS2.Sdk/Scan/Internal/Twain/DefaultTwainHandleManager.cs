@@ -1,4 +1,4 @@
-#if !MAC
+#if !MACOS
 using System.Threading;
 using NAPS2.Platform.Windows;
 using NTwain;

@@ -1,4 +1,4 @@
-#if MAC
+#if MACOS
 using MonoMac.AppKit;
 using MonoMac.CoreGraphics;
 using NAPS2.Images.Mac;

@@ -22,7 +22,7 @@ public static class WorkerServer
             var run = async () => { await tcs.Task; };
             var stop = () => tcs.SetResult(true);
 
-#if !MAC
+#if !MACOS
 #if NET6_0_OR_GREATER
             if (OperatingSystem.IsWindows())
             {
@@ -44,7 +44,7 @@ public static class WorkerServer
                 new NamedPipeServer(string.Format(WorkerFactory.PIPE_NAME_FORMAT, Process.GetCurrentProcess().Id));
             var serviceImpl = new WorkerServiceImpl(scanningContext,
                 new ThumbnailRenderer(scanningContext.ImageContext), new StubMapiWrapper(),
-#if MAC
+#if MACOS
                 new StubTwainController());
 #else
                 new LocalTwainController(scanningContext));

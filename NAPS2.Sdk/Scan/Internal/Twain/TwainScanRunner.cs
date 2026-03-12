@@ -1,4 +1,4 @@
-#if !MAC
+#if !MACOS
 using System.Threading;
 using Google.Protobuf;
 using Microsoft.Extensions.Logging;

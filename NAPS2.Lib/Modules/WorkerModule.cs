@@ -12,7 +12,7 @@ public class WorkerModule : Module
     protected override void Load(ContainerBuilder builder)
     {
         // Bindings for ITwainController as used by WorkerServiceImpl
-#if MAC
+#if MACOS
         builder.RegisterType<StubTwainController>().As<ITwainController>();
 #elif NET6_0_OR_GREATER
         if (OperatingSystem.IsWindows())

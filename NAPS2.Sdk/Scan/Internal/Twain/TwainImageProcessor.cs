@@ -1,4 +1,4 @@
-#if !MAC
+#if !MACOS
 using Microsoft.Extensions.Logging;
 using NAPS2.Images.Bitwise;
 using NAPS2.Remoting.Worker;

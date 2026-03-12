@@ -1,6 +1,6 @@
 using NAPS2.EtoForms.Ui;
 using NAPS2.Scan;
-#if !MAC
+#if !MACOS
 using NAPS2.Wia;
 #endif
 
@@ -66,7 +66,7 @@ public class DesktopScanController : IDesktopScanController
             var editSettingsForm = _formFactory.Create<EditProfileForm>();
             editSettingsForm.NewProfile = true;
             editSettingsForm.ScanProfile = _config.DefaultProfileSettings();
-#if !MAC
+#if !MACOS
 #if NET6_0_OR_GREATER
             if (OperatingSystem.IsWindows())
             {

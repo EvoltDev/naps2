@@ -1,4 +1,4 @@
-#if !MAC
+#if !MACOS
 using NAPS2.Scan.Internal.Twain;
 using NTwain;
 
