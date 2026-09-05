@@ -16,4 +16,9 @@ internal class InProcScanBridgeFactory : IScanBridgeFactory
     {
         return _inProcScanBridge;
     }
+
+    public IScanBridge Create(Driver driver)
+    {
+        return _inProcScanBridge;
+    }
 }

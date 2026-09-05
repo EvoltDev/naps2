@@ -6,6 +6,58 @@ namespace NAPS2.Scan.Internal;
 // TODO: Add tests for this and/or scanperformer
 internal class ScanOptionsValidator
 {
+    public RawScanOptions ValidateRaw(RawScanOptions options, ScanningContext scanningContext, bool requireDevice)
+    {
+        // The context is accepted to mirror ValidateAll and to keep callers that validate both request types on one
+        // code path. Raw acquisition has no OCR or image-processing settings to validate against the context.
+        return ValidateRaw(options, requireDevice);
+    }
+
+    public RawScanOptions ValidateRaw(RawScanOptions options, bool requireDevice)
+    {
+        if (options == null) throw new ArgumentNullException(nameof(options));
+
+        options = options.Clone();
+
+        if (options.Device != null && options.Driver != Driver.Default && options.Driver != options.Device.Driver)
+        {
+            throw new ArgumentException("RawScanOptions.Device.Driver must match RawScanOptions.Driver");
+        }
+
+        options.Driver = ValidateDriver(options.Device?.Driver ?? options.Driver);
+        if (options.Driver == Driver.Sane)
+        {
+            options.UseNativeUI = false;
+        }
+
+        if (requireDevice && string.IsNullOrEmpty(options.Device?.ID))
+        {
+            throw new ArgumentException("RawScanOptions.Device.ID must be specified");
+        }
+
+        if (options.PageSize == null)
+        {
+            options.PageSize = PageSize.Letter;
+        }
+        if (options.Dpi == 0)
+        {
+            options.Dpi = 100;
+        }
+        if (options.Dpi < 0)
+        {
+            throw new ArgumentException("Invalid value for RawScanOptions.Dpi.");
+        }
+
+        // A caller may have explicitly assigned null to one of the optional backend groups. Keep the driver-facing
+        // contract non-null after validation so concrete drivers do not need defensive checks in their hot path.
+        options.WiaOptions ??= new WiaOptions();
+        options.TwainOptions ??= new TwainOptions();
+        options.SaneOptions ??= new SaneOptions();
+        options.EsclOptions ??= new EsclOptions();
+
+        return options;
+    }
+
     public ScanOptions ValidateAll(ScanOptions options, ScanningContext scanningContext, bool requireDevice)
     {
         options = options.Clone();

@@ -62,4 +62,17 @@ internal class RemoteScanController : IRemoteScanController
             }
         });
     }
+
+    public async Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        var driver = _scanDriverFactory.Create(options.Driver);
+        var progressThrottle = new EventThrottle<double>(scanEvents.PageProgress);
+        var driverScanEvents = new ScanEvents(() =>
+        {
+            scanEvents.PageStart();
+            progressThrottle.Reset();
+        }, progressThrottle.OnlyIfChanged, scanEvents.DeviceUriChanged);
+        await driver.ScanRaw(options, cancelToken, driverScanEvents, sink);
+    }
 }

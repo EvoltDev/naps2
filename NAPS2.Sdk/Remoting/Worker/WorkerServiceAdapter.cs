@@ -1,5 +1,6 @@
 ﻿using System.Threading;
 using Grpc.Core;
+using Google.Protobuf.Collections;
 using NAPS2.ImportExport.Email;
 using NAPS2.ImportExport.Email.Mapi;
 using NAPS2.Scan;
@@ -136,6 +137,218 @@ internal class WorkerServiceAdapter
                 throw;
             }
         }
+    }
+
+    /// <summary>
+    /// Acquires raw driver data from a worker. The stream contains no
+    /// ProcessedImage or ImageSerializer payloads; artifact chunks are
+    /// forwarded directly to the caller's raw sink.
+    /// </summary>
+    public async Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        var request = new RawScanRequest
+        {
+            OptionsXml = options.ToXml(),
+            ProtocolVersion = RawWorkerProtocol.Version
+        };
+        request.Features.Add(RawWorkerProtocol.Features);
+
+        AsyncServerStreamingCall<RawScanResponse>? streamingCall = null;
+        var writers = new Dictionary<ulong, IRawScanArtifactWriter>();
+        var nextSequences = new Dictionary<ulong, ulong>();
+        var allWriters = new List<IRawScanArtifactWriter>();
+        try
+        {
+            streamingCall = _client.ScanRaw(request, cancellationToken: cancelToken);
+            var protocolReceived = false;
+            while (await streamingCall.ResponseStream.MoveNext(cancelToken).ConfigureAwait(false))
+            {
+                var response = streamingCall.ResponseStream.Current;
+                RemotingHelper.HandleErrors(response.Error);
+                switch (response.PayloadCase)
+                {
+                    case RawScanResponse.PayloadOneofCase.Protocol:
+                        ValidateProtocol(response.Protocol, request.Features, ref protocolReceived);
+                        break;
+                    case RawScanResponse.PayloadOneofCase.Configuration:
+                        sink.ConfigurationApplied(RawWorkerWireMapper.FromConfiguration(response.Configuration));
+                        break;
+                    case RawScanResponse.PayloadOneofCase.ArtifactStart:
+                    {
+                        var artifact = response.ArtifactStart;
+                        if (artifact.ArtifactId == 0 || writers.ContainsKey(artifact.ArtifactId))
+                        {
+                            throw new InvalidOperationException("The worker returned a duplicate raw artifact id.");
+                        }
+                        var writer = sink.BeginArtifact(RawWorkerWireMapper.FromArtifactStart(artifact)) ??
+                                     throw new InvalidOperationException(
+                                         $"The raw sink returned no writer for artifact {artifact.ArtifactId}.");
+                        allWriters.Add(writer);
+                        writers.Add(artifact.ArtifactId, writer);
+                        nextSequences.Add(artifact.ArtifactId, 0);
+                        break;
+                    }
+                    case RawScanResponse.PayloadOneofCase.ArtifactChunk:
+                    {
+                        var chunk = response.ArtifactChunk;
+                        if (!writers.TryGetValue(chunk.ArtifactId, out var writer))
+                        {
+                            throw new InvalidOperationException(
+                                $"The worker returned a raw chunk for unknown artifact {chunk.ArtifactId}.");
+                        }
+                        if (chunk.Sequence != nextSequences[chunk.ArtifactId])
+                        {
+                            throw new InvalidOperationException(
+                                $"The worker returned raw chunk {chunk.Sequence} out of order for artifact " +
+                                $"{chunk.ArtifactId}; expected {nextSequences[chunk.ArtifactId]}.");
+                        }
+                        if (chunk.Data.Length > RawWorkerProtocol.MaxChunkBytes)
+                        {
+                            throw new InvalidOperationException(
+                                $"The worker returned an oversized raw chunk ({chunk.Data.Length} bytes).");
+                        }
+                        nextSequences[chunk.ArtifactId]++;
+                        // ByteString is immutable, but the raw sink contract
+                        // requires the writer to own its copy before return.
+                        // Passing a temporary array preserves that boundary.
+                        var data = chunk.Data.ToByteArray();
+                        writer.Write(data, RawWorkerWireMapper.FromArtifactChunk(chunk));
+                        break;
+                    }
+                    case RawScanResponse.PayloadOneofCase.ArtifactComplete:
+                    {
+                        var complete = response.ArtifactComplete;
+                        if (!writers.TryGetValue(complete.ArtifactId, out var writer))
+                        {
+                            throw new InvalidOperationException(
+                                $"The worker completed unknown raw artifact {complete.ArtifactId}.");
+                        }
+                        await writer.CompleteAsync(RawWorkerWireMapper.FromArtifactComplete(complete), cancelToken)
+                            .ConfigureAwait(false);
+                        // Keep the writer registered until its terminal
+                        // operation has succeeded. The finally block still
+                        // disposes it after it is removed from the open set.
+                        writers.Remove(complete.ArtifactId);
+                        nextSequences.Remove(complete.ArtifactId);
+                        break;
+                    }
+                    case RawScanResponse.PayloadOneofCase.ArtifactAbort:
+                    {
+                        var abort = response.ArtifactAbort;
+                        if (!writers.TryGetValue(abort.ArtifactId, out var writer))
+                        {
+                            throw new InvalidOperationException(
+                                $"The worker aborted unknown raw artifact {abort.ArtifactId}.");
+                        }
+                        try
+                        {
+                            await writer.AbortAsync(cancelToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new RawWorkerArtifactAbortedException(abort.ArtifactId, abort.Reason, ex);
+                        }
+                        // An abort is a terminal protocol failure even when
+                        // the local sink accepted the cleanup operation. The
+                        // server supplied reason is part of the exception.
+                        writers.Remove(abort.ArtifactId);
+                        nextSequences.Remove(abort.ArtifactId);
+                        throw new RawWorkerArtifactAbortedException(abort.ArtifactId, abort.Reason);
+                    }
+                    case RawScanResponse.PayloadOneofCase.PageStart:
+                        scanEvents.PageStart();
+                        break;
+                    case RawScanResponse.PayloadOneofCase.Progress:
+                        scanEvents.PageProgress(response.Progress.Value);
+                        break;
+                    case RawScanResponse.PayloadOneofCase.DeviceUriChanged:
+                        scanEvents.DeviceUriChanged(response.DeviceUriChanged.IconUri,
+                            response.DeviceUriChanged.ConnectionUri);
+                        break;
+                    case RawScanResponse.PayloadOneofCase.None:
+                        throw new InvalidOperationException("The worker returned an empty raw scan response.");
+                    case RawScanResponse.PayloadOneofCase.Error:
+                        // HandleErrors above throws for this case. Keep the
+                        // switch exhaustive even when a malformed or empty
+                        // error payload does not contain a remoting type.
+                        throw new InvalidOperationException(
+                            string.IsNullOrEmpty(response.Error.Message)
+                                ? "The worker returned an unspecified raw scan error."
+                                : response.Error.Message);
+                    default:
+                        throw new InvalidOperationException("The worker returned an unknown raw scan response.");
+                }
+            }
+
+            if (!protocolReceived)
+            {
+                throw new InvalidOperationException("The worker did not negotiate the raw scan protocol.");
+            }
+            if (writers.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"The worker closed the raw scan with {writers.Count} open artifact(s): " +
+                    string.Join(", ", writers.Keys));
+            }
+        }
+        catch (RpcException ex)
+        {
+            if (ex.StatusCode == StatusCode.Unavailable)
+            {
+                throw new ScanDriverUnknownException(PlatformCompat.System.WorkerCrashMessage, ex);
+            }
+            if (ex.StatusCode != StatusCode.Cancelled)
+            {
+                throw;
+            }
+        }
+        finally
+        {
+            try
+            {
+                streamingCall?.Dispose();
+            }
+            finally
+            {
+                foreach (var writer in allWriters)
+                {
+                    try
+                    {
+                        await writer.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception)
+                    {
+                        // Preserve the stream/driver error. Cleanup is best
+                        // effort after a terminal transport failure.
+                    }
+                }
+            }
+        }
+    }
+
+    private static void ValidateProtocol(RawScanProtocol protocol, RepeatedField<string> requestedFeatures,
+        ref bool protocolReceived)
+    {
+        if (protocolReceived)
+        {
+            throw new InvalidOperationException("The worker negotiated the raw scan protocol more than once.");
+        }
+        if (protocol.Version != RawWorkerProtocol.Version)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported raw worker protocol version {protocol.Version}; expected {RawWorkerProtocol.Version}.");
+        }
+        var acceptedFeatures = protocol.AcceptedFeatures.ToHashSet(StringComparer.Ordinal);
+        foreach (var requiredFeature in RawWorkerProtocol.Features)
+        {
+            if (requestedFeatures.Contains(requiredFeature) && !acceptedFeatures.Contains(requiredFeature))
+            {
+                throw new InvalidOperationException(
+                    $"The worker does not support required raw scan feature '{requiredFeature}'.");
+            }
+        }
+        protocolReceived = true;
     }
 
     public async Task<bool> CanLoadMapi(string? clientName)

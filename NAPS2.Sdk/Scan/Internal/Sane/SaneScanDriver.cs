@@ -1,4 +1,5 @@
 ﻿using System.Collections.Immutable;
+using System.Globalization;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using NAPS2.Images.Bitwise;
@@ -329,6 +330,441 @@ internal class SaneScanDriver : IScanDriver
         });
     }
 
+    public Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        return Task.Run(async () =>
+        {
+            bool hasAtLeastOnePage = false;
+            try
+            {
+                sink.ConfigurationApplied(new DriverProcessingResult());
+                Installation.Initialize();
+                using var client = new SaneClient(Installation, options.SaneOptions.KeepInitialized);
+                if (cancelToken.IsCancellationRequested) return;
+                _scanningContext.Logger.LogDebug("Opening SANE Device \"{ID}\" for raw acquisition", options.Device!.ID);
+                using var device = client.OpenDevice(options.Device.ID);
+                if (cancelToken.IsCancellationRequested) return;
+                var optionData = SetOptions(device, ToScanOptions(options));
+                var cancelOnce = new Once(device.Cancel);
+                using var registration = cancelToken.Register(cancelOnce.Run);
+                try
+                {
+                    var pageIndex = 0;
+                    if (!optionData.IsFeeder)
+                    {
+                        if (!await ScanRawPage(device, scanEvents, optionData, options, sink, pageIndex))
+                        {
+                            throw new DeviceException("SANE expected image");
+                        }
+                        hasAtLeastOnePage = true;
+                    }
+                    else
+                    {
+                        while (await ScanRawPage(device, scanEvents, optionData, options, sink, pageIndex++))
+                        {
+                            hasAtLeastOnePage = true;
+                        }
+                    }
+                }
+                finally
+                {
+                    cancelOnce.Run();
+                }
+            }
+            catch (SaneException ex)
+            {
+                switch (ex.Status)
+                {
+                    case SaneStatus.Good:
+                    case SaneStatus.Cancelled:
+                        return;
+                    case SaneStatus.NoDocs:
+                        if (!hasAtLeastOnePage)
+                        {
+                            throw new DeviceFeederEmptyException();
+                        }
+
+                        break;
+                    case SaneStatus.DeviceBusy:
+                        throw new DeviceBusyException();
+                    case SaneStatus.Invalid:
+                        throw new DeviceOfflineException();
+                    case SaneStatus.Jammed:
+                        throw new DevicePaperJamException();
+                    case SaneStatus.CoverOpen:
+                        throw new DeviceCoverOpenException();
+                    case SaneStatus.IoError:
+                        throw new DeviceCommunicationException();
+                    default:
+                        throw new DeviceException($"SANE error: {ex.Status}");
+                }
+            }
+        });
+    }
+
+    private async Task<bool> ScanRawPage(ISaneDevice device, IScanEvents scanEvents, OptionData optionData,
+        RawScanOptions options, IRawScanSink sink, int pageIndex)
+    {
+        IRawScanArtifactWriter? writer = null;
+        try
+        {
+            // SANE exposes a frame only after sane_start/sane_get_parameters. Create the artifact after those calls,
+            // but before sane_read, so every borrowed read buffer is copied directly to the caller's bounded sink.
+            device.Start();
+            scanEvents.PageStart();
+            var firstParameters = device.GetParameters();
+            ValidateRawParameters(firstParameters);
+            writer = sink.BeginArtifact(CreateRawHeader(firstParameters, optionData, options));
+            var frames = new List<SaneRawFrameData>();
+            var firstFrame = ReadRawFrameData(
+                device,
+                scanEvents,
+                firstParameters,
+                writer,
+                pageIndex,
+                frameIndex: 0,
+                offset: 0);
+            if (firstFrame == null)
+            {
+                await AbortAndDisposeRawWriter(writer);
+                writer = null;
+                return false;
+            }
+            frames.Add(firstFrame.Value);
+
+            // Planar SANE RGB is delivered as three consecutive frames. Keep those frames in one artifact so a
+            // caller expands one physical page into one logical page instead of three pages.
+            if (IsPlanar(firstParameters.Frame))
+            {
+                for (var frameIndex = 1; frameIndex < 3; frameIndex++)
+                {
+                    device.Start();
+                    var frameParameters = device.GetParameters();
+                    ValidateRawParameters(frameParameters);
+                    ValidateRawFrameCompatibility(firstParameters, frameParameters);
+                    var frame = ReadRawFrameData(
+                        device,
+                        scanEvents,
+                        frameParameters,
+                        writer,
+                        pageIndex,
+                        frameIndex,
+                        frames[^1].Offset + frames[^1].Length);
+                    if (frame == null)
+                    {
+                        throw new DeviceException("SANE expected the remaining RGB frame");
+                    }
+                    if (frame.Value.Lines != firstFrame.Value.Lines)
+                    {
+                        throw new DeviceException("SANE planar RGB frames have different heights.");
+                    }
+                    frames.Add(frame.Value);
+                }
+            }
+
+            var rawMetadata = CreateRawMetadata(frames, optionData, options);
+            try
+            {
+                await CompleteAndDisposeRawWriter(writer, rawMetadata);
+            }
+            catch
+            {
+                // The completion helper owns cleanup after it has been entered. Avoid attempting a second abort in
+                // the surrounding catch if completion itself fails.
+                writer = null;
+                throw;
+            }
+            writer = null;
+            return true;
+        }
+        catch
+        {
+            if (writer != null)
+            {
+                await AbortAndDisposeRawWriter(writer);
+            }
+            throw;
+        }
+    }
+
+    private SaneRawFrameData? ReadRawFrameData(
+        ISaneDevice device,
+        IScanEvents scanEvents,
+        SaneReadParameters parameters,
+        IRawScanArtifactWriter writer,
+        int pageIndex,
+        int frameIndex,
+        long offset)
+    {
+        ValidateRawParameters(parameters);
+        var frameSize = parameters.Lines <= 0
+            ? 0L
+            : (long) parameters.BytesPerLine * parameters.Lines;
+        var isPlanar = IsPlanar(parameters.Frame);
+        var totalProgress = isPlanar ? frameSize * 3 : frameSize;
+        var currentProgress = frameIndex * frameSize;
+        if (totalProgress > 0)
+        {
+            scanEvents.PageProgress(currentProgress / (double) totalProgress);
+        }
+
+        var buffer = new byte[65536];
+        long length = 0;
+        while (device.Read(buffer, out var readLength))
+        {
+            if (readLength <= 0)
+            {
+                continue;
+            }
+            if (readLength > buffer.Length)
+            {
+                throw new DeviceException($"SANE returned an invalid read length: {readLength}");
+            }
+
+            writer.Write(
+                buffer.AsSpan(0, readLength),
+                new RawBlockLayout
+                {
+                    Offset = offset + length,
+                    Width = parameters.PixelsPerLine > 0 ? parameters.PixelsPerLine : null,
+                    Height = parameters.Lines > 0 ? parameters.Lines : null,
+                    Stride = parameters.BytesPerLine > 0 ? parameters.BytesPerLine : null,
+                    BitsPerPixel = parameters.Depth > 0 ? parameters.Depth : null,
+                    BytesPerPixel = parameters.Depth >= 8 ? parameters.Depth / 8 : null,
+                    PixelFormat = GetPixelFormat(parameters),
+                    SubPixelType = GetSubPixelType(parameters),
+                    FrameType = GetRawFrameType(parameters.Frame),
+                    ChannelIndex = IsPlanar(parameters.Frame) ? GetChannelIndex(parameters.Frame) : null,
+                    ChannelCount = IsPlanar(parameters.Frame) ? 3 : null,
+                    PageIndex = pageIndex,
+                    FrameIndex = frameIndex
+                });
+            length += readLength;
+            currentProgress += readLength;
+            if (totalProgress > 0)
+            {
+                scanEvents.PageProgress(Math.Min(1, currentProgress / (double) totalProgress));
+            }
+        }
+
+        if (length == 0)
+        {
+            return null;
+        }
+
+        if (length % parameters.BytesPerLine != 0)
+        {
+            throw new DeviceException(
+                "SANE returned a partial row; raw acquisition requires complete rows with the declared stride.");
+        }
+
+        var derivedLines = length / parameters.BytesPerLine;
+        if (derivedLines <= 0 || derivedLines > int.MaxValue)
+        {
+            throw new DeviceException("SANE returned an invalid raw image height.");
+        }
+        if (parameters.Lines > 0 && derivedLines != parameters.Lines)
+        {
+            throw new DeviceException(
+                $"SANE returned {derivedLines} rows but declared {parameters.Lines} rows.");
+        }
+
+        return new SaneRawFrameData(parameters, offset, length, (int) derivedLines);
+    }
+
+    private static void ValidateRawParameters(SaneReadParameters parameters)
+    {
+        if (parameters.PixelsPerLine <= 0)
+        {
+            throw new DeviceException("SANE did not provide a valid raw image width.");
+        }
+        if (parameters.BytesPerLine <= 0)
+        {
+            throw new DeviceException(
+                "SANE did not provide a byte stride; raw acquisition cannot preserve the row layout.");
+        }
+    }
+
+    private static void ValidateRawFrameCompatibility(SaneReadParameters expected, SaneReadParameters actual)
+    {
+        if (actual.Frame is not (SaneFrameType.Red or SaneFrameType.Green or SaneFrameType.Blue) ||
+            actual.PixelsPerLine != expected.PixelsPerLine ||
+            actual.BytesPerLine != expected.BytesPerLine ||
+            actual.Depth != expected.Depth)
+        {
+            throw new DeviceException("SANE planar RGB frames have incompatible layouts.");
+        }
+    }
+
+    private static RawScanArtifactHeader CreateRawHeader(SaneReadParameters parameters, OptionData optionData,
+        RawScanOptions options)
+    {
+        var isPlanar = IsPlanar(parameters.Frame);
+        return new RawScanArtifactHeader
+        {
+            Type = RawScanArtifactType.SaneFrame,
+            ContentType = "application/vnd.naps2.sane-raw",
+            FileExtension = ".sane-raw",
+            PixelFormat = isPlanar ? ImagePixelFormat.RGB24 : GetPixelFormat(parameters),
+            SubPixelType = isPlanar ? SubPixelType.Rgb : GetSubPixelType(parameters),
+            FrameType = isPlanar ? RawScanFrameType.Image : GetRawFrameType(parameters.Frame),
+            Width = parameters.PixelsPerLine > 0 ? parameters.PixelsPerLine : null,
+            Height = parameters.Lines > 0 ? parameters.Lines : null,
+            Stride = parameters.BytesPerLine > 0 ? parameters.BytesPerLine : null,
+            HorizontalResolution = optionData.XRes > 0 ? optionData.XRes : null,
+            VerticalResolution = optionData.YRes > 0 ? optionData.YRes : null,
+            PageCount = 1,
+            SourceId = options.Device?.ID
+        };
+    }
+
+    private static RawScanArtifactMetadata CreateRawMetadata(IReadOnlyList<SaneRawFrameData> frames,
+        OptionData optionData, RawScanOptions options)
+    {
+        var first = frames[0];
+        var isPlanar = IsPlanar(first.Parameters.Frame);
+        int? width = first.Parameters.PixelsPerLine > 0 ? first.Parameters.PixelsPerLine : null;
+        var height = frames[0].Lines;
+        if (height is not { } knownHeight || frames.Any(x => x.Lines != knownHeight))
+        {
+            throw new DeviceException("SANE did not provide a consistent raw image height.");
+        }
+        var additionalMetadata = new Dictionary<string, string?>
+        {
+            [SaneRawScanDecoder.FrameCountKey] = frames.Count.ToString(CultureInfo.InvariantCulture),
+            [SaneRawScanDecoder.PlanarKey] = isPlanar.ToString(CultureInfo.InvariantCulture)
+        };
+        for (var i = 0; i < frames.Count; i++)
+        {
+            var frame = frames[i];
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.frame"] =
+                frame.Parameters.Frame.ToString();
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.offset"] =
+                frame.Offset.ToString(CultureInfo.InvariantCulture);
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.length"] =
+                frame.Length.ToString(CultureInfo.InvariantCulture);
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.width"] =
+                frame.Parameters.PixelsPerLine.ToString(CultureInfo.InvariantCulture);
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.height"] =
+                frame.Lines is { } lines
+                    ? lines.ToString(CultureInfo.InvariantCulture)
+                    : null;
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.stride"] =
+                frame.Parameters.BytesPerLine.ToString(CultureInfo.InvariantCulture);
+            additionalMetadata[$"{SaneRawScanDecoder.FramePrefix}{i}.depth"] =
+                frame.Parameters.Depth.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return new RawScanArtifactMetadata
+        {
+            ByteLength = frames.Sum(x => x.Length),
+            Width = width,
+            Height = height,
+            HorizontalResolution = optionData.XRes > 0 ? optionData.XRes : null,
+            VerticalResolution = optionData.YRes > 0 ? optionData.YRes : null,
+            PixelFormat = isPlanar ? ImagePixelFormat.RGB24 : GetPixelFormat(first.Parameters),
+            SubPixelType = isPlanar ? SubPixelType.Rgb : GetSubPixelType(first.Parameters),
+            FrameType = isPlanar ? RawScanFrameType.Image : GetRawFrameType(first.Parameters.Frame),
+            PageCount = 1,
+            FrameCount = frames.Count,
+            PageSide = RawScanPageSide.Unknown,
+            IsDuplex = options.PaperSource == PaperSource.Duplex,
+            DeviceId = options.Device?.ID,
+            SourceId = options.Device?.ID,
+            ContentType = "application/vnd.naps2.sane-raw",
+            AdditionalMetadata = additionalMetadata
+        };
+    }
+
+    private static ScanOptions ToScanOptions(RawScanOptions options) => new()
+    {
+        Driver = options.Driver,
+        Device = options.Device,
+        PaperSource = options.PaperSource,
+        Dpi = options.Dpi,
+        PageSize = options.PageSize,
+        BitDepth = options.BitDepth,
+        PageAlign = options.PageAlign,
+        SaneOptions = options.SaneOptions
+    };
+
+    private static bool IsPlanar(SaneFrameType frame) =>
+        frame is SaneFrameType.Red or SaneFrameType.Green or SaneFrameType.Blue;
+
+    private static int GetChannelIndex(SaneFrameType frame) => frame switch
+    {
+        SaneFrameType.Red => 0,
+        SaneFrameType.Green => 1,
+        SaneFrameType.Blue => 2,
+        _ => -1
+    };
+
+    private static RawScanFrameType GetRawFrameType(SaneFrameType frame) => frame switch
+    {
+        SaneFrameType.Gray => RawScanFrameType.Gray,
+        SaneFrameType.Red => RawScanFrameType.Red,
+        SaneFrameType.Green => RawScanFrameType.Green,
+        SaneFrameType.Blue => RawScanFrameType.Blue,
+        SaneFrameType.Rgb => RawScanFrameType.Image,
+        _ => RawScanFrameType.Unknown
+    };
+
+    private static ImagePixelFormat GetPixelFormat(SaneReadParameters parameters) => (parameters.Depth, parameters.Frame) switch
+    {
+        (1, SaneFrameType.Gray) => ImagePixelFormat.BW1,
+        (8, SaneFrameType.Gray) => ImagePixelFormat.Gray8,
+        (8, SaneFrameType.Rgb) => ImagePixelFormat.RGB24,
+        (8, SaneFrameType.Red or SaneFrameType.Green or SaneFrameType.Blue) => ImagePixelFormat.Gray8,
+        _ => ImagePixelFormat.Unknown
+    };
+
+    private static SubPixelType? GetSubPixelType(SaneReadParameters parameters) => (parameters.Depth, parameters.Frame) switch
+    {
+        (1, SaneFrameType.Gray) => SubPixelType.InvertedBit,
+        (8, SaneFrameType.Gray) => SubPixelType.Gray,
+        (8, SaneFrameType.Rgb) => SubPixelType.Rgb,
+        (8, SaneFrameType.Red or SaneFrameType.Green or SaneFrameType.Blue) => SubPixelType.Gray,
+        _ => null
+    };
+
+    private static async Task CompleteAndDisposeRawWriter(IRawScanArtifactWriter writer,
+        RawScanArtifactMetadata metadata)
+    {
+        try
+        {
+            await writer.CompleteAsync(metadata);
+        }
+        catch
+        {
+            try
+            {
+                await writer.AbortAsync();
+            }
+            catch
+            {
+                // Preserve the original completion error.
+            }
+            throw;
+        }
+        finally
+        {
+            await writer.DisposeAsync();
+        }
+    }
+
+    private static async Task AbortAndDisposeRawWriter(IRawScanArtifactWriter writer)
+    {
+        try
+        {
+            await writer.AbortAsync();
+        }
+        finally
+        {
+            await writer.DisposeAsync();
+        }
+    }
+
     private string? MaybeCreateTempConfigDirForSingleBackend(string? backendName)
     {
         if (string.IsNullOrEmpty(backendName))
@@ -610,6 +1046,12 @@ internal class SaneScanDriver : IScanDriver
 
         return dataStream;
     }
+
+    private readonly record struct SaneRawFrameData(
+        SaneReadParameters Parameters,
+        long Offset,
+        long Length,
+        int? Lines);
 
     internal class OptionData
     {

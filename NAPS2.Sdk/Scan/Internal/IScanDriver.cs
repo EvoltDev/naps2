@@ -10,4 +10,7 @@ internal interface IScanDriver
 
     Task Scan(ScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
         Action<IMemoryImage> callback);
+
+    Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink);
 }

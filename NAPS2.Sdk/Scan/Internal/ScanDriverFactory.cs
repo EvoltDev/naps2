@@ -13,7 +13,12 @@ internal class ScanDriverFactory : IScanDriverFactory
 
     public IScanDriver Create(ScanOptions options)
     {
-        switch (options.Driver)
+        return Create(options.Driver);
+    }
+
+    public IScanDriver Create(Driver driver)
+    {
+        switch (driver)
         {
 #if MACOS
             case Driver.Apple:
@@ -36,7 +41,7 @@ internal class ScanDriverFactory : IScanDriverFactory
                 return new Escl.EsclScanDriver(_scanningContext);
             default:
                 throw new DriverNotSupportedException(
-                    $"Unsupported driver: {options.Driver}. " +
+                    $"Unsupported driver: {driver}. " +
                     "Make sure you're using the right framework target (e.g. net10.0-macos26.2 for the Apple driver).");
         }
     }

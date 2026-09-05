@@ -43,7 +43,24 @@ internal class RemoteTwainController : ITwainController
         }
     }
 
+    public async Task StartRawScan(RawScanOptions options, IScanEvents scanEvents, IRawScanSink sink,
+        CancellationToken cancelToken)
+    {
+        using var workerContext = CreateWorker(options.TwainOptions.Dsm);
+        await workerContext.Service.ScanRaw(options, cancelToken, scanEvents, sink);
+        if (cancelToken.IsCancellationRequested)
+        {
+            _scanningContext.Logger.LogDebug("NAPS2.TW - Stopping raw scan worker after cancellation");
+            await workerContext.Stop();
+        }
+    }
+
     private WorkerContext CreateWorker(ScanOptions options)
+    {
+        return CreateWorker(options.TwainOptions.Dsm);
+    }
+
+    private WorkerContext CreateWorker(TwainDsm dsm)
     {
         if (_scanningContext.WorkerFactory == null)
         {
@@ -51,7 +68,7 @@ internal class RemoteTwainController : ITwainController
             throw new InvalidOperationException();
         }
         return _scanningContext.CreateWorker(
-            options.TwainOptions.Dsm == TwainDsm.NewX64 || !PlatformCompat.System.SupportsWinX86Worker
+            dsm == TwainDsm.NewX64 || !PlatformCompat.System.SupportsWinX86Worker
                 ? WorkerType.Native
                 : WorkerType.WinX86)!;
     }

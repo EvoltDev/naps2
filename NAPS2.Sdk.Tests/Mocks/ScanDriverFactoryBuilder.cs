@@ -15,6 +15,7 @@ public class ScanDriverFactoryBuilder
         _scanDriver = new StubScanDriver();
         _scanDriverFactory = Substitute.For<IScanDriverFactory>();
         _scanDriverFactory.Create(Arg.Any<ScanOptions>()).Returns(_scanDriver);
+        _scanDriverFactory.Create(Arg.Any<Driver>()).Returns(_scanDriver);
     }
 
     public ScanDriverFactoryBuilder WithDeviceList(params ScanDevice[] devices)
@@ -70,6 +71,12 @@ public class ScanDriverFactoryBuilder
                 scanEvents.PageStart();
                 callback(image);
             }
+            return Task.CompletedTask;
+        }
+
+        public Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+            IRawScanSink sink)
+        {
             return Task.CompletedTask;
         }
     }

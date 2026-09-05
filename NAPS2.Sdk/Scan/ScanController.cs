@@ -243,6 +243,62 @@ public class ScanController
     }
 
     /// <summary>
+    /// Acquires scanner data into raw artifacts without decoding or applying image processing.
+    /// </summary>
+    /// <param name="options">The acquisition options to use.</param>
+    /// <param name="sink">The sink that owns each committed raw artifact.</param>
+    /// <param name="cancellationToken">A token used to cancel the operation.</param>
+    /// <remarks>
+    /// The sink receives borrowed transfer buffers synchronously through <see cref="IRawScanArtifactWriter.Write"/>.
+    /// Implementations must copy those buffers before returning. Image decoding, software corrections, final encoding,
+    /// and thumbnail generation are deliberately outside this method.
+    /// </remarks>
+    public async Task ScanRawAsync(RawScanOptions options, IRawScanSink sink,
+        CancellationToken cancellationToken = default)
+    {
+        if (sink == null) throw new ArgumentNullException(nameof(sink));
+
+        options = _scanOptionsValidator.ValidateRaw(options, _scanningContext, true);
+        Exception? scanError = null;
+        int pageNumber = 0;
+        void ScanStartCallback() => ScanStart?.Invoke(this, EventArgs.Empty);
+        void ScanEndCallback() => ScanEnd?.Invoke(this, new ScanEndEventArgs(scanError));
+        void PageStartCallback()
+        {
+            pageNumber++;
+            PageStart?.Invoke(this, new PageStartEventArgs(pageNumber));
+        }
+        void PageProgressCallback(double progress) =>
+            PageProgress?.Invoke(this, new PageProgressEventArgs(pageNumber, progress));
+        void ConnectionUriChangedCallback(string? iconUri, string? connectionUri) =>
+            DeviceUriChanged?.Invoke(this, new DeviceUriChangedEventArgs(iconUri, connectionUri));
+
+        _scanningContext.Logger.LogDebug("Acquiring raw scan with {Device}", options.Device);
+        _scanningContext.Logger.LogDebug(
+            "Raw scan source: {Source}; bit depth: {BitDepth}; dpi: {Dpi}; page size: {PageSize}",
+            options.PaperSource, options.BitDepth, options.Dpi, options.PageSize);
+        ScanStartCallback();
+        try
+        {
+            var bridge = _scanBridgeFactory.Create(options.Driver);
+            await bridge.ScanRaw(options, cancellationToken,
+                new ScanEvents(PageStartCallback, PageProgressCallback, ConnectionUriChangedCallback), sink);
+        }
+        catch (Exception ex)
+        {
+            scanError = ex;
+            if (PropagateErrors)
+            {
+                throw;
+            }
+        }
+        finally
+        {
+            ScanEndCallback();
+        }
+    }
+
+    /// <summary>
     /// Whether scan errors should be thrown when enumerating the IAsyncEnumerable result. True by default. If you set
     /// this to false, you will need to listen for the ScanError event to handle errors.
     /// </summary>

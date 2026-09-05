@@ -16,6 +16,8 @@ internal class MockScanBridge : IScanBridge
 
     public ScanOptions LastOptions { get; private set; }
 
+    public RawScanOptions LastRawOptions { get; private set; }
+
     public Task GetDevices(ScanOptions options, CancellationToken cancelToken, Action<ScanDevice> callback)
     {
         LastOptions = options;
@@ -57,5 +59,12 @@ internal class MockScanBridge : IScanBridge
                 throw Error;
             }
         });
+    }
+
+    public Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        LastRawOptions = options;
+        return Task.CompletedTask;
     }
 }

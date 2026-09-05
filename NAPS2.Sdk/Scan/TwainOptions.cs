@@ -6,6 +6,12 @@
 public class TwainOptions
 {
     /// <summary>
+    /// Driver-side image and page processing requests. A null member means that no request is sent for that
+    /// operation; the driver's existing setting is left unchanged.
+    /// </summary>
+    public DriverProcessingOptions ProcessingOptions { get; set; } = new();
+
+    /// <summary>
     /// The DSM version of TWAIN to use. Drivers/Windows usually come bundled with an Old version, while NAPS2 itself
     /// provides a New version. This is the most common thing to try changing if you have compatibility issues. You
     /// can also use NewX64 to access 64-bit TWAIN drivers but usually they don't exist, everything is generally 32-bit. 

@@ -19,8 +19,10 @@ internal class TwainScanRunner
     private readonly ILogger _logger;
     private readonly TwainDsm _dsm;
     private readonly ScanOptions _options;
+    private readonly RawScanOptions? _rawOptions;
     private readonly CancellationToken _cancelToken;
-    private readonly ITwainEvents _twainEvents;
+    private readonly ITwainEvents? _twainEvents;
+    private readonly TwainRawScanSink? _rawScanSink;
     private readonly TwainHandleManager _handleManager;
     private readonly TwainSession _session;
     private readonly TaskCompletionSource<bool> _tcs;
@@ -29,12 +31,28 @@ internal class TwainScanRunner
 
     public TwainScanRunner(ILogger logger, TWIdentity twainAppId, TwainDsm dsm, ScanOptions options,
         CancellationToken cancelToken, ITwainEvents twainEvents)
+        : this(logger, twainAppId, dsm, options, null, cancelToken, twainEvents, null)
+    {
+    }
+
+    public TwainScanRunner(ILogger logger, TWIdentity twainAppId, TwainDsm dsm, RawScanOptions options,
+        CancellationToken cancelToken, IScanEvents scanEvents, IRawScanSink sink)
+        : this(logger, twainAppId, dsm, CreateScanOptions(options), options, cancelToken, null,
+            new TwainRawScanSink(options, sink, scanEvents, logger))
+    {
+    }
+
+    private TwainScanRunner(ILogger logger, TWIdentity twainAppId, TwainDsm dsm, ScanOptions options,
+        RawScanOptions? rawOptions, CancellationToken cancelToken, ITwainEvents? twainEvents,
+        TwainRawScanSink? rawScanSink)
     {
         _logger = logger;
         _dsm = dsm;
         _options = options;
+        _rawOptions = rawOptions;
         _cancelToken = cancelToken;
         _twainEvents = twainEvents;
+        _rawScanSink = rawScanSink;
 
         _handleManager = TwainHandleManager.Factory();
         PlatformInfo.Current.PreferNewDSM = dsm != TwainDsm.Old;
@@ -111,6 +129,7 @@ internal class TwainScanRunner
     private void FinishWithCancellation()
     {
         _logger.LogDebug("NAPS2.TW - Finishing with cancellation");
+        _rawScanSink?.TransferCanceled();
         if (_session.State != 5)
         {
             // If we're in state 6 or 7, this will abort the ongoing transfer via ForceStepDown.
@@ -141,6 +160,15 @@ internal class TwainScanRunner
     private void FinishWithCompletion()
     {
         _logger.LogDebug("NAPS2.TW - Finishing with completion");
+        try
+        {
+            _rawScanSink?.CompleteScan();
+        }
+        catch (Exception ex)
+        {
+            FinishWithError(ex);
+            return;
+        }
         // At this point we should be in state 4 and this will clean up the source/session.
         UnloadTwain();
         _tcs.TrySetResult(true);
@@ -168,6 +196,7 @@ internal class TwainScanRunner
         }
         finally
         {
+            _rawScanSink?.Dispose();
             _handleManager.Dispose();
         }
     }
@@ -186,7 +215,14 @@ internal class TwainScanRunner
     private void TransferCanceled(object? sender, TransferCanceledEventArgs e)
     {
         _logger.LogDebug("NAPS2.TW - TransferCanceled");
-        _twainEvents.TransferCanceled(new TwainTransferCanceled());
+        if (_rawScanSink != null)
+        {
+            _rawScanSink.TransferCanceled();
+        }
+        else
+        {
+            _twainEvents!.TransferCanceled(new TwainTransferCanceled());
+        }
     }
 
     private void TransferError(object? sender, TransferErrorEventArgs e)
@@ -221,17 +257,22 @@ internal class TwainScanRunner
         _logger.LogDebug("NAPS2.TW - DataTransferred");
         try
         {
+            if (_rawScanSink != null)
+            {
+                _rawScanSink.DataTransferred(e);
+                return;
+            }
             if (_options.TwainOptions.TransferMode == TwainTransferMode.Memory && e.MemoryData == null)
             {
                 _logger.LogDebug("NAPS2.TW - Expected memory transfer, but got native transfer?");
             }
             if (e.MemoryData != null)
             {
-                _twainEvents.MemoryBufferTransferred(ToMemoryBuffer(e.MemoryData, e.MemoryInfo));
+                _twainEvents!.MemoryBufferTransferred(ToMemoryBuffer(e.MemoryData, e.MemoryInfo));
             }
             else
             {
-                _twainEvents.NativeImageTransferred(new TwainNativeImage
+                _twainEvents!.NativeImageTransferred(new TwainNativeImage
                 {
                     Buffer = ByteString.FromStream(e.GetNativeImageStream())
                 });
@@ -240,6 +281,10 @@ internal class TwainScanRunner
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending TWAIN data transfer event");
+            if (_rawScanSink != null)
+            {
+                FinishWithError(ex);
+            }
         }
     }
 
@@ -253,7 +298,14 @@ internal class TwainScanRunner
             {
                 pageStart.ImageData = ToImageData(e.PendingImageInfo);
             }
-            _twainEvents.PageStart(pageStart);
+            if (_rawScanSink != null)
+            {
+                _rawScanSink.PageStart(e);
+            }
+            else
+            {
+                _twainEvents!.PageStart(pageStart);
+            }
             if (_cancelToken.IsCancellationRequested)
             {
                 e.CancelAll = true;
@@ -262,6 +314,10 @@ internal class TwainScanRunner
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending TWAIN transfer ready event");
+            if (_rawScanSink != null)
+            {
+                FinishWithError(ex);
+            }
         }
     }
 
@@ -297,6 +353,23 @@ internal class TwainScanRunner
     private void ConfigureSource(DataSource source)
     {
         // Transfer Mode
+        var rawDefaultTransferMode = _rawOptions != null &&
+                                     _options.TwainOptions.TransferMode == TwainTransferMode.Default;
+        if (_rawOptions != null && _options.TwainOptions.TransferMode == TwainTransferMode.Memory &&
+            !TwainRawScanSink.HasTransferCompletionFlag)
+        {
+            throw new TwainRawTransferCompletionUnavailableException(
+                "The loaded NAPS2.NTwain assembly does not expose DataTransferredEventArgs.IsTransferComplete; raw memory-strip acquisition cannot safely determine completion.");
+        }
+        if (_rawOptions != null && _options.TwainOptions.TransferMode == TwainTransferMode.Default)
+        {
+            // The EVOSCAN NTwain package exposes the actual XFERDONE result on the final memory strip. Prefer memory
+            // because it is bounded by the raw writer, and use native only when the source cannot negotiate memory.
+            _options.TwainOptions.TransferMode = TwainRawScanSink.HasTransferCompletionFlag &&
+                                                  SupportsTransferMechanism(source, XferMech.Memory)
+                ? TwainTransferMode.Memory
+                : TwainTransferMode.Native;
+        }
         if (_options.TwainOptions.TransferMode == TwainTransferMode.Default)
         {
             if (source.Manufacturer.Contains("Kyocera", StringComparison.InvariantCultureIgnoreCase) &&
@@ -315,15 +388,42 @@ internal class TwainScanRunner
         if (_options.TwainOptions.TransferMode == TwainTransferMode.Memory)
         {
             _logger.LogDebug("Transfer mode: Memory");
-            source.Capabilities.ICapXferMech.SetValue(XferMech.Memory);
+            if (_rawOptions != null)
+            {
+                if (!TrySetTransferMechanism(source, XferMech.Memory))
+                {
+                    if (!rawDefaultTransferMode)
+                    {
+                        throw new DeviceException("The TWAIN source does not support raw memory transfer mode.");
+                    }
+
+                    // A source can advertise CAP_XFERMECH but reject SET for the active camera or paper source.
+                    // Native transfer remains a complete-image fallback in that case.
+                    _logger.LogDebug("TWAIN source rejected memory transfer mode; falling back to native transfer");
+                    _options.TwainOptions.TransferMode = TwainTransferMode.Native;
+                    TrySetTransferMechanism(source, XferMech.Native);
+                }
+            }
+            else
+            {
+                source.Capabilities.ICapXferMech.SetValue(XferMech.Memory);
+            }
         }
         else
         {
             _logger.LogDebug("Transfer mode: Native");
+            if (_rawOptions != null)
+            {
+                // The processed path relies on the source default for native transfers. Raw acquisition makes it
+                // explicit so a source cannot silently return memory strips without a completion signal.
+                TrySetTransferMechanism(source, XferMech.Native);
+            }
         }
 
         if (_options.UseNativeUI)
         {
+            _rawScanSink?.ConfigurationApplied(TwainDriverProcessing.NativeUiResult(
+                _options.TwainOptions.ProcessingOptions));
             return;
         }
 
@@ -417,6 +517,86 @@ internal class TwainScanRunner
         // Resolution
         SetClosest(source.Capabilities.ICapXResolution, _options.Dpi);
         SetClosest(source.Capabilities.ICapYResolution, _options.Dpi);
+
+        var processingResult = TwainDriverProcessing.Apply(source, _options.TwainOptions.ProcessingOptions, _logger);
+        if (_rawScanSink != null)
+        {
+            _rawScanSink.ConfigurationApplied(processingResult);
+        }
+        else if (processingResult.Settings.Count > 0)
+        {
+            _logger.LogDebug("TWAIN driver processing settings: {Settings}",
+                string.Join(", ", processingResult.Settings.Select(x => $"{x.Name}={x.Status}")));
+        }
+    }
+
+    private static ScanOptions CreateScanOptions(RawScanOptions options)
+    {
+        return new ScanOptions
+        {
+            Driver = options.Driver,
+            Device = options.Device,
+            PaperSource = options.PaperSource,
+            Dpi = options.Dpi,
+            PageSize = options.PageSize,
+            BitDepth = options.BitDepth,
+            PageAlign = options.PageAlign,
+            UseNativeUI = options.UseNativeUI,
+            DialogParent = options.DialogParent,
+            TwainOptions = options.TwainOptions
+        };
+    }
+
+    private bool SupportsTransferMechanism(DataSource source, XferMech transferMechanism)
+    {
+        try
+        {
+            var capability = source.Capabilities.ICapXferMech;
+            if (!capability.IsSupported || !capability.CanSet || capability.IsReadOnly || !capability.CanGet)
+            {
+                return false;
+            }
+            return capability.GetValues().Contains(transferMechanism);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "TWAIN transfer mechanism query failed for {TransferMechanism}",
+                transferMechanism);
+            return false;
+        }
+    }
+
+    private bool TrySetTransferMechanism(DataSource source, XferMech transferMechanism)
+    {
+        try
+        {
+            var capability = source.Capabilities.ICapXferMech;
+            if (!capability.IsSupported || !capability.CanSet || capability.IsReadOnly)
+            {
+                _logger.LogDebug("TWAIN source cannot set {TransferMechanism} transfer mode", transferMechanism);
+                return false;
+            }
+            var returnCode = capability.SetValue(transferMechanism);
+            if (returnCode == ReturnCode.Success)
+            {
+                return true;
+            }
+            if (returnCode == ReturnCode.CheckStatus && capability.CanGetCurrent &&
+                capability.GetCurrent() == transferMechanism)
+            {
+                // TWAIN may report a warning while still applying the requested mechanism. The read-back is the
+                // authoritative check for this negotiation step.
+                return true;
+            }
+            _logger.LogDebug("TWAIN source rejected {TransferMechanism} transfer mode with {ReturnCode}",
+                transferMechanism, returnCode);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "TWAIN transfer mechanism set failed for {TransferMechanism}", transferMechanism);
+            return false;
+        }
     }
 
     private void SetClosest(ICapWrapper<TWFix32> cap, int value)

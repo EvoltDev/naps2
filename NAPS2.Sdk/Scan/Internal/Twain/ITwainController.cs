@@ -11,4 +11,6 @@ internal interface ITwainController
     Task<List<ScanDevice>> GetDeviceList(ScanOptions options);
     Task<ScanCaps> GetCaps(ScanOptions options);
     Task StartScan(ScanOptions options, ITwainEvents twainEvents, CancellationToken cancelToken);
+    Task StartRawScan(RawScanOptions options, IScanEvents scanEvents, IRawScanSink sink,
+        CancellationToken cancelToken);
 }

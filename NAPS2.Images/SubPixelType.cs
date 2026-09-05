@@ -1,6 +1,6 @@
 namespace NAPS2.Images;
 
-public class SubPixelType
+public sealed record SubPixelType
 {
     /// <summary>
     /// 4 bytes per pixel, 1 byte per sample, red-green-blue-alpha order.
@@ -92,16 +92,16 @@ public class SubPixelType
         InvertColorSpace = true
     };
 
-    private SubPixelType()
+    public SubPixelType()
     {
     }
 
-    public int BitsPerPixel { get; private init; }
-    public int BytesPerPixel { get; private init; }
-    public int RedOffset { get; private init; }
-    public int GreenOffset { get; private init; }
-    public int BlueOffset { get; private init; }
-    public int AlphaOffset { get; private init; }
-    public bool HasAlpha { get; private init; }
-    public bool InvertColorSpace { get; private init; }
+    public int BitsPerPixel { get; init; }
+    public int BytesPerPixel { get; init; }
+    public int RedOffset { get; init; }
+    public int GreenOffset { get; init; }
+    public int BlueOffset { get; init; }
+    public int AlphaOffset { get; init; }
+    public bool HasAlpha { get; init; }
+    public bool InvertColorSpace { get; init; }
 }

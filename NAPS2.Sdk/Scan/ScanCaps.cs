@@ -7,6 +7,12 @@ namespace NAPS2.Scan;
 public class ScanCaps
 {
     /// <summary>
+    /// Driver-side image and page processing capabilities. This is separate from processing requests in
+    /// <see cref="TwainOptions.ProcessingOptions"/> and <see cref="WiaOptions.ProcessingOptions"/>.
+    /// </summary>
+    public DriverProcessingCaps? DriverProcessingCaps { get; init; }
+
+    /// <summary>
     /// Metadata for the device.
     /// </summary>
     public MetadataCaps? MetadataCaps { get; init; }

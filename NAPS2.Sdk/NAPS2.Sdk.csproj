@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net462;net10.0</TargetFrameworks>
     <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-      $(TargetFrameworks);net10.0-macos26.2
+      $(TargetFrameworks);net10.0-macos26.5
     </TargetFrameworks>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -26,16 +26,16 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageVersion>1.2.1.1</PackageVersion>
+    <PackageVersion>1.3.1-evoscan.1</PackageVersion>
   </PropertyGroup>
   
   <ItemGroup>
     <PackageReference Include="Grpc.Tools" Version="2.65.0" PrivateAssets="all" />
     <PackageReference Include="GrpcDotNetNamedPipes" Version="3.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
-    <PackageReference Include="NAPS2.NTwain" Version="1.0.1" Condition="'$(TargetFramework)' != 'net10.0-macos26.2'" />
+    <PackageReference Include="NAPS2.NTwain" Version="1.0.2-evoscan.1" Condition="'$(TargetFramework)' != 'net10.0-macos26.5'" />
     <PackageReference Include="NAPS2.PdfSharp" Version="1.0.1" />
-    <PackageReference Include="NAPS2.Wia" Version="2.0.3" Condition="'$(TargetFramework)' != 'net10.0-macos26.2'" />
+    <PackageReference Include="NAPS2.Wia" Version="2.0.3" Condition="'$(TargetFramework)' != 'net10.0-macos26.5'" />
     <PackageReference Include="SharpZipLib" Version="1.4.2" />
     <PackageReference Include="SixLabors.Fonts" Version="1.0.1" />
     <PackageReference Include="System.Collections.Immutable" Version="8.0.0" />
@@ -78,7 +78,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\NAPS2.Escl\NAPS2.Escl.csproj" />
-    <ProjectReference Include="..\NAPS2.Images.Mac\NAPS2.Images.Mac.csproj" Condition="'$(TargetFramework)' == 'net10.0-macos26.2'" />
+    <ProjectReference Include="..\NAPS2.Images.Mac\NAPS2.Images.Mac.csproj" Condition="'$(TargetFramework)' == 'net10.0-macos26.5'" />
     <ProjectReference Include="..\NAPS2.Images\NAPS2.Images.csproj" />
     <ProjectReference Include="..\NAPS2.Internals\NAPS2.Internals.csproj" />
   </ItemGroup>

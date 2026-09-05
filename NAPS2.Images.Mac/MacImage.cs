@@ -128,7 +128,7 @@ public class MacImage : IMemoryImage
             imageFormat = ImageContext.GetFileFormatFromExtension(path);
         }
         ImageContext.CheckSupportsFormat(imageFormat);
-        var rep = GetRepForSaving(imageFormat, options);
+        using var rep = GetRepForSaving(imageFormat, options);
         if (!rep.Save(path, false, out var error))
         {
             throw new IOException(error!.Description);
@@ -142,8 +142,9 @@ public class MacImage : IMemoryImage
             throw new ArgumentException("Format required to save to a stream", nameof(imageFormat));
         }
         ImageContext.CheckSupportsFormat(imageFormat);
-        var rep = GetRepForSaving(imageFormat, options);
-        rep.AsStream().CopyTo(stream);
+        using var rep = GetRepForSaving(imageFormat, options);
+        using var source = rep.AsStream();
+        source.CopyTo(stream);
     }
 
     private NSData GetRepForSaving(ImageFileFormat imageFormat, ImageSaveOptions? options)
@@ -171,9 +172,9 @@ public class MacImage : IMemoryImage
                 targetFormat = ImagePixelFormat.RGB24;
             }
             using var helper = PixelFormatHelper.Create(this, targetFormat);
-            var cgImage = helper.Image.Rep.CGImage; //RepresentationUsingTypeProperties(fileType, props);
+            using var cgImage = helper.Image.Rep.CGImage;
             var data = new NSMutableData();
-            var props = new NSMutableDictionary();
+            using var props = new NSMutableDictionary();
             props.Add((NSString) "DPIWidth", NSObject.FromObject(HorizontalResolution));
             props.Add((NSString) "DPIHeight", NSObject.FromObject(VerticalResolution));
             if (options.Quality != -1 && imageFormat is ImageFileFormat.Jpeg or ImageFileFormat.Jpeg2000)

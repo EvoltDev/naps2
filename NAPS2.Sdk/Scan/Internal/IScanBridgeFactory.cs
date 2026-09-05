@@ -3,4 +3,6 @@
 internal interface IScanBridgeFactory
 {
     IScanBridge Create(ScanOptions options);
+
+    IScanBridge Create(Driver driver);
 }

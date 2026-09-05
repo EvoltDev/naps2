@@ -50,6 +50,17 @@ internal class AppleScanDriver : IScanDriver
         await oper.Scan();
     }
 
+    public async Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        using var reader = new DeviceReader();
+        // Note we don't want to dispose the device, as the ICDeviceBrowser manages its lifetime.
+        var device = await GetDevice(reader, options.Device!);
+        using var oper =
+            new DeviceOperator(_scanningContext, device, reader, options, cancelToken, scanEvents, sink);
+        await oper.ScanRaw();
+    }
+
     private async Task<ICScannerDevice> GetDevice(DeviceReader reader, ScanDevice scanDevice)
     {
         var tcs = new TaskCompletionSource<ICScannerDevice>();

@@ -48,4 +48,15 @@ internal class WorkerScanBridge : IScanBridge
         await ctx.Service.Scan(_scanningContext, options, cancelToken, scanEvents,
             (image, tempPath) => { callback(image, new PostProcessingContext { TempPath = tempPath }); });
     }
+
+    public async Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        if (_scanningContext.WorkerFactory == null)
+        {
+            throw new InvalidOperationException("ScanningContext must have a worker set up.");
+        }
+        using var ctx = _scanningContext.CreateWorker(_workerType)!;
+        await ctx.Service.ScanRaw(options, cancelToken, scanEvents, sink);
+    }
 }

@@ -28,6 +28,8 @@ internal static class Deskewer
     private const double CLUSTER_TARGET_SPREAD = 2.01;
     private const double IGNORE_EDGE_FRACTION = 0.01;
 
+    private static readonly SinCos[] SinCosValues = PrecalculateSinCos();
+
     public static RotationTransform GetDeskewTransform(IMemoryImage image) => new RotationTransform(-GetSkewAngle(image));
         
     public static double GetSkewAngle(IMemoryImage image)
@@ -41,12 +43,12 @@ internal static class Deskewer
         // we only look at near-horizontal lines.)
         int yOffset = (int)Math.Round(h * IGNORE_EDGE_FRACTION);
 
-        var sinCos = PrecalculateSinCos();
+        var sinCos = SinCosValues;
 
         // TODO: Consider reducing the precision of distance or angle,
         // TODO: possibly with a second pass to restore precision.
         int dCount = 2 * (w + h);
-        int[,] scores = new int[dCount, ANGLE_STEPS];
+        int[] scores = new int[dCount * ANGLE_STEPS];
 
         // TODO: This should be a good candidate for OpenCL optimization.
         // TODO: If you parallelize over the angle, you're operating over
@@ -61,7 +63,7 @@ internal static class Deskewer
                     {
                         var sc = sinCos[i];
                         int d = (int)(y * sc.cos - x * sc.sin + w);
-                        scores[d, i]++;
+                        scores[d * ANGLE_STEPS + i]++;
                     }
                 }
             }
@@ -101,14 +103,14 @@ internal static class Deskewer
             .ToArray();
     }
 
-    private static double[] GetAnglesOfBestLines(int[,] scores, int dCount)
+    private static double[] GetAnglesOfBestLines(int[] scores, int dCount)
     {
         var best = new (int angleIndex, int count)[BEST_MAX_COUNT];
         for (int i = 0; i < dCount; i++)
         {
             for (int angleIndex = 0; angleIndex < ANGLE_STEPS; angleIndex++)
             {
-                int count = scores[i, angleIndex];
+                int count = scores[i * ANGLE_STEPS + angleIndex];
                 if (count > best[BEST_MAX_COUNT - 1].count)
                 {
                     best[BEST_MAX_COUNT - 1] = (angleIndex, count);
@@ -117,6 +119,10 @@ internal static class Deskewer
                         if (count > best[j].count)
                         {
                             (best[j], best[j + 1]) = (best[j + 1], best[j]);
+                        }
+                        else
+                        {
+                            break;
                         }
                     }
                 }

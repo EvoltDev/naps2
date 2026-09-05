@@ -177,30 +177,68 @@ public class EsclClient
     public async Task<RawDocument?> NextDocument(EsclJob job, Action<double>? pageProgress = null,
         bool shortTimeout = false)
     {
-        var progressCts = new CancellationTokenSource();
-        if (pageProgress != null)
+        using var document = await NextDocumentStream(job, pageProgress, shortTimeout);
+        if (document == null)
         {
-            var progressUrl = GetUrl($"{job.UriPath}/Progress");
-            var progressResponse = await LongTimeoutHttpClient.GetStreamAsync(progressUrl);
-            var streamReader = new StreamReader(progressResponse);
-            _ = Task.Run(async () =>
-            {
-                using var streamReaderForDisposal = streamReader;
-                while (await streamReader.ReadLineAsync() is { } line)
-                {
-                    if (progressCts.IsCancellationRequested)
-                    {
-                        return;
-                    }
-                    if (double.TryParse(line, NumberStyles.Any, CultureInfo.InvariantCulture, out var progress))
-                    {
-                        pageProgress(progress);
-                    }
-                }
-            });
+            return null;
         }
+
+        // Preserve the existing buffered API for callers that need a byte array. Raw acquisition uses
+        // NextDocumentStream directly so large PDF/TIFF responses never have to be retained in memory.
+        var data = await ReadStreamWithPerReadTimeout(document.Data, 60_000, CancelToken);
+        if (data.Length == 0)
+        {
+            throw new Exception("ESCL response had no data, the connection may have been interrupted");
+        }
+
+        var rawDocument = new RawDocument
+        {
+            Data = data,
+            ContentType = document.ContentType,
+            ContentLocation = document.ContentLocation
+        };
+        Logger.LogDebug("GET OK: {Type} ({Bytes} bytes) {Location}", rawDocument.ContentType, rawDocument.Data.Length,
+            rawDocument.ContentLocation);
+        return rawDocument;
+    }
+
+    /// <summary>
+    /// Starts downloading the next eSCL document and returns its response body without buffering it.
+    /// </summary>
+    /// <remarks>
+    /// The returned document owns the HTTP response and must be disposed after the body has been consumed. The
+    /// response remains open while the caller copies the body, which is required for large PDF and TIFF transfers.
+    /// </remarks>
+    public async Task<RawDocumentStream?> NextDocumentStream(EsclJob job, Action<double>? pageProgress = null,
+        bool shortTimeout = false)
+    {
+        RawDocumentProgress? progress = null;
+        HttpResponseMessage? progressResponse = null;
         try
         {
+            if (pageProgress != null)
+            {
+                var progressUrl = GetUrl($"{job.UriPath}/Progress");
+                progressResponse = await LongTimeoutHttpClient.GetAsync(
+                    progressUrl, HttpCompletionOption.ResponseHeadersRead, CancelToken);
+                try
+                {
+                    progressResponse.EnsureSuccessStatusCode();
+                    var progressStream = await progressResponse.Content.ReadAsStreamAsync();
+                    progress = new RawDocumentProgress(progressResponse, progressStream);
+                    progressResponse = null;
+                }
+                catch
+                {
+                    progressResponse?.Dispose();
+                    progressResponse = null;
+                    throw;
+                }
+                var progressLifetime = progress!;
+                _ = Task.Run(() => ReadProgressAsync(progressLifetime, pageProgress!));
+                progressLifetime.AttachReader();
+            }
+
             // TODO: Maybe check Content-Location on the response header to ensure no duplicate document?
             HttpResponseMessage response;
             while (true)
@@ -211,47 +249,119 @@ public class EsclClient
                     {
                         Logger.LogDebug("ESCL GET {Url}", url);
                         var client = shortTimeout ? HttpClient : LongTimeoutHttpClient;
-                        return client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                        return client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, CancelToken);
                     });
                 if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
                 {
                     // ServiceUnavailable = retry after a delay
+                    response.Dispose();
                     Logger.LogDebug("GET returned 503, waiting to retry");
-                    await Task.Delay(2000);
+                    await Task.Delay(2000, CancelToken);
                     continue;
                 }
                 if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
                 {
                     // NotFound = end of scan, Gone = canceled
                     Logger.LogDebug("GET failed: {Status}", response.StatusCode);
+                    response.Dispose();
+                    progress?.Dispose();
+                    progress = null;
                     return null;
                 }
-                response.EnsureSuccessStatusCode();
+                try
+                {
+                    response.EnsureSuccessStatusCode();
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
                 break;
             }
-            // TODO: Define a NAPS2 protocol extension to shorten this timeout to 10s (once we do the rollout of server-side 503s)
-            var data = await ReadStreamWithPerReadTimeout(await response.Content.ReadAsStreamAsync(), 60_000);
-            var doc = new RawDocument
+
+            RawDocumentStream document;
+            try
             {
-                Data = data,
-                ContentType = response.Content.Headers.ContentType?.MediaType,
-                ContentLocation = response.Content.Headers.ContentLocation?.ToString()
-            };
-            if (doc.Data.Length == 0)
-            {
-                throw new Exception("ESCL response had no data, the connection may have been interrupted");
+                var data = await response.Content.ReadAsStreamAsync();
+                document = new RawDocumentStream(response, data, progress);
             }
-            Logger.LogDebug("GET OK: {Type} ({Bytes} bytes) {Location}", doc.ContentType, doc.Data.Length,
-                doc.ContentLocation);
-            return doc;
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+            progress = null;
+            Logger.LogDebug("GET headers OK: {Type} ({Bytes} bytes) {Location}", document.ContentType,
+                document.ContentLength, document.ContentLocation);
+            return document;
         }
-        finally
+        catch
         {
-            progressCts.Cancel();
+            progress?.Dispose();
+            progressResponse?.Dispose();
+            throw;
         }
     }
 
-    private async Task<byte[]> ReadStreamWithPerReadTimeout(Stream stream, int timeout)
+    private async Task ReadProgressAsync(RawDocumentProgress progress, Action<double> pageProgress)
+    {
+        var buffer = new byte[1024];
+        var line = new StringBuilder();
+        try
+        {
+            while (true)
+            {
+                var bytesRead = await progress.Stream.ReadAsync(buffer, 0, buffer.Length, progress.CancellationToken);
+                if (bytesRead == 0)
+                {
+                    PublishProgress(line, pageProgress);
+                    return;
+                }
+
+                for (var i = 0; i < bytesRead; i++)
+                {
+                    if (buffer[i] == (byte)'\n')
+                    {
+                        PublishProgress(line, pageProgress);
+                    }
+                    else
+                    {
+                        // Progress values are invariant-culture ASCII numbers. Keeping a small line buffer avoids
+                        // the non-cancellable ReadLineAsync API on netstandard2.0.
+                        line.Append((char)buffer[i]);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (progress.IsCancellationRequested)
+        {
+            Logger.LogDebug(ex, "ESCL progress stream closed");
+        }
+        catch (Exception ex)
+        {
+            // Progress is advisory. A malformed or prematurely closed progress stream must not fail document
+            // acquisition, and observing the exception here prevents an unobserved background task failure.
+            Logger.LogDebug(ex, "ESCL progress stream failed");
+        }
+        finally
+        {
+            progress.ReaderCompleted();
+        }
+    }
+
+    private static void PublishProgress(StringBuilder line, Action<double> pageProgress)
+    {
+        if (double.TryParse(line.ToString().Trim(), NumberStyles.Any, CultureInfo.InvariantCulture,
+                out var progress))
+        {
+            pageProgress(progress);
+        }
+        line.Clear();
+    }
+
+    private async Task<byte[]> ReadStreamWithPerReadTimeout(Stream stream, int timeout,
+        CancellationToken cancellationToken)
     {
         // We expect the server to be continuously sending some kind of data - if reads take longer than the timeout,
         // we assume that the connection has been disrupted.
@@ -259,7 +369,7 @@ public class EsclClient
         byte[] buffer = new byte[65536];
         while (true)
         {
-            var cts = new CancellationTokenSource();
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(timeout);
             int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cts.Token);
             if (bytesRead == 0) break;

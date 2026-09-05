@@ -22,7 +22,22 @@ internal class DeviceOperator : ICScannerDeviceDelegate
     private readonly DeviceReader _reader;
     private readonly ScanOptions _options;
     private readonly IScanEvents _scanEvents;
-    private readonly Action<IMemoryImage> _callback;
+    private readonly Action<IMemoryImage>? _callback;
+    private readonly IRawScanSink? _rawSink;
+    private readonly object _rawGate = new();
+    private readonly SemaphoreSlim _rawWriterOperationGate = new(1, 1);
+    private readonly HashSet<IRawScanArtifactWriter> _rawWriters = new();
+    private readonly List<Task> _rawCompletionTasks = new();
+    private Task _lastRawCompletionTask = Task.CompletedTask;
+    private Task _rawFailureCleanupTask = Task.CompletedTask;
+    private Exception? _rawFailure;
+    private readonly CancellationToken _rawCancellationToken;
+    private bool _rawMode;
+    private IRawScanArtifactWriter? _rawWriter;
+    private RawScanArtifactHeader? _rawHeader;
+    private long _rawBytes;
+    private int _rawPageIndex;
+    private string? _rawColorSyncProfile;
     private readonly TaskCompletionSource _openSessionTcs = new();
     private readonly TaskCompletionSource _readyTcs = new();
     private TaskCompletionSource<ICScannerFunctionalUnit> _unitTcs = new();
@@ -34,7 +49,8 @@ internal class DeviceOperator : ICScannerDeviceDelegate
     private MemoryStream? _buffer;
 
     public DeviceOperator(ScanningContext scanningContext, ICScannerDevice device, DeviceReader reader,
-        ScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents, Action<IMemoryImage> callback)
+        ScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents, Action<IMemoryImage>? callback,
+        IRawScanSink? rawSink = null)
     {
         _scanningContext = scanningContext;
         _logger = scanningContext.Logger;
@@ -43,6 +59,9 @@ internal class DeviceOperator : ICScannerDeviceDelegate
         _options = options;
         _scanEvents = scanEvents;
         _callback = callback;
+        _rawSink = rawSink;
+        _rawMode = rawSink != null;
+        _rawCancellationToken = cancelToken;
 
         cancelToken.Register(() =>
         {
@@ -54,49 +73,95 @@ internal class DeviceOperator : ICScannerDeviceDelegate
         });
     }
 
+    public DeviceOperator(ScanningContext scanningContext, ICScannerDevice device, DeviceReader reader,
+        RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents, IRawScanSink sink)
+        : this(scanningContext, device, reader, ToScanOptions(options), cancelToken, scanEvents, null, sink)
+    {
+    }
+
     public override void DidOpenSession(ICDevice device, NSError? error)
     {
-        _logger.LogDebug("DidOpenSession {Error}", error);
-        SetResultOrError(_openSessionTcs, error);
+        try
+        {
+            _logger.LogDebug("DidOpenSession {Error}", error);
+            SetResultOrError(_openSessionTcs, error);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     public override void DidBecomeReady(ICDevice device)
     {
-        _logger.LogDebug("DidBecomeReady");
-        _readyTcs.TrySetResult();
+        try
+        {
+            _logger.LogDebug("DidBecomeReady");
+            _readyTcs.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     public override void DidCloseSession(ICDevice device, NSError? error)
     {
-        _logger.LogDebug("DidCloseSession {Error}", error);
-        SetResultOrError(_closeTcs, error);
+        try
+        {
+            _logger.LogDebug("DidCloseSession {Error}", error);
+            SetResultOrError(_closeTcs, error);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     public override void DidReceiveStatusInformation(ICDevice device, NSDictionary<NSString, NSObject> status)
     {
-        var state = status[ICStatusNotificationKeys.NotificationKey] as NSString;
-        _logger.LogDebug("DidReceiveStatusInformation {State}", state);
+        try
+        {
+            var state = status[ICStatusNotificationKeys.NotificationKey] as NSString;
+            _logger.LogDebug("DidReceiveStatusInformation {State}", state);
 
-        if (state == ICScannerStatus.WarmingUp)
-        {
-            _scanEvents.PageStart();
+            if (state == ICScannerStatus.WarmingUp && !_rawMode)
+            {
+                _scanEvents.PageStart();
+            }
+            if (_cancelTcs != null && _unit?.ScanInProgress != true)
+            {
+                _cancelTcs.TrySetResult();
+            }
         }
-        if (_cancelTcs != null && !_unit!.ScanInProgress)
+        catch (Exception ex)
         {
-            _cancelTcs.SetResult();
+            HandleNativeCallbackException(ex);
         }
     }
 
     public override void DidEncounterError(ICDevice device, NSError? error)
     {
-        _logger.LogDebug("DidEncounterError {Error}", error);
-        var ex = error != null ? new DeviceException(error.Description) : new DeviceException();
-        // TODO: Put these in a list or something
-        _openSessionTcs.TrySetException(ex);
-        _readyTcs.TrySetException(ex);
-        _unitTcs.TrySetException(ex);
-        _scanSuccessTcs.TrySetException(ex);
-        _closeTcs.TrySetException(ex);
+        try
+        {
+            _logger.LogDebug("DidEncounterError {Error}", error);
+            var ex = error != null ? new DeviceException(error.Description) : new DeviceException();
+            if (_rawMode)
+            {
+                RecordRawFailure(ex);
+            }
+            // TODO: Put these in a list or something
+            _openSessionTcs.TrySetException(ex);
+            _readyTcs.TrySetException(ex);
+            _unitTcs.TrySetException(ex);
+            _scanSuccessTcs.TrySetException(ex);
+            _scanCompleteTcs.TrySetException(ex);
+            _closeTcs.TrySetException(ex);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     // TODO: This will be called if the scanner is in use. We can consider waiting a couple seconds for the scanner
@@ -109,12 +174,34 @@ internal class DeviceOperator : ICScannerDeviceDelegate
     public override void DidSelectFunctionalUnit(
         ICScannerDevice scanner, ICScannerFunctionalUnit functionalUnit, NSError? error)
     {
-        _logger.LogDebug("DidSelectFunctionalUnit {Unit} {Error}", functionalUnit.GetType().Name, error);
-        SetResultOrError(_unitTcs, functionalUnit, error);
+        try
+        {
+            _logger.LogDebug("DidSelectFunctionalUnit {Unit} {Error}", functionalUnit.GetType().Name, error);
+            SetResultOrError(_unitTcs, functionalUnit, error);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     public override void DidScanToBandData(ICScannerDevice scanner, ICScannerBandData data)
     {
+        if (_rawMode)
+        {
+            try
+            {
+                DidScanToRawBandData(data);
+            }
+            catch (Exception ex)
+            {
+                // ImageCaptureCore invokes this method from native code. Never allow a managed exception to cross
+                // that callback boundary; record the failure and stop the scan instead.
+                RecordRawFailure(ex);
+            }
+            return;
+        }
+
         var expectedBufferLength = (int) (data.FullImageHeight * data.BytesPerRow);
         _buffer ??= new MemoryStream(expectedBufferLength);
         data.DataBuffer!.AsStream().CopyTo(_buffer);
@@ -135,7 +222,7 @@ internal class DeviceOperator : ICScannerDeviceDelegate
                 var image = await tcs.Task;
                 if (image != null)
                 {
-                    _callback(image);
+                    _callback!(image);
                 }
             });
             Task.Run(() =>
@@ -182,6 +269,239 @@ internal class DeviceOperator : ICScannerDeviceDelegate
                     tcs.TrySetResult(null);
                 }
             });
+        }
+    }
+
+    private void DidScanToRawBandData(ICScannerBandData data)
+    {
+        ThrowIfRawFailed();
+        _rawCancellationToken.ThrowIfCancellationRequested();
+        var dataBuffer = data.DataBuffer;
+        if (dataBuffer == null || dataBuffer.Length == 0)
+        {
+            _logger.LogDebug("ICC: Received an empty raw band");
+            return;
+        }
+
+        var bytes = dataBuffer.ToArray();
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        IRawScanArtifactWriter writer;
+        RawScanArtifactHeader header;
+        long offset;
+        int pageIndex;
+        lock (_rawGate)
+        {
+            ThrowIfRawFailedNoLock();
+            if (_rawWriter == null)
+            {
+                _scanEvents.PageStart();
+                _rawHeader = CreateRawHeader(data);
+                writer = _rawSink!.BeginArtifact(_rawHeader);
+                _rawWriter = writer;
+                _rawWriters.Add(writer);
+                _rawBytes = 0;
+                _rawColorSyncProfile = CopyColorSyncProfile(data.ColorSyncProfilePath);
+            }
+            else
+            {
+                writer = _rawWriter;
+            }
+            header = _rawHeader!;
+            offset = _rawBytes;
+            pageIndex = _rawPageIndex;
+        }
+
+        var bytesPerRow = (int) data.BytesPerRow;
+        var bandHeight = data.DataNumRows > 0
+            ? (int) data.DataNumRows
+            : bytesPerRow > 0
+                ? (int) Math.Min(int.MaxValue, (bytes.Length + (long) bytesPerRow - 1) / bytesPerRow)
+                : (int?) null;
+        var shouldFinish = false;
+        double? progress = null;
+        _rawWriterOperationGate.Wait();
+        try
+        {
+            lock (_rawGate)
+            {
+                ThrowIfRawFailedNoLock();
+                if (!_rawWriters.Contains(writer))
+                {
+                    throw new DeviceException("Apple raw artifact is no longer available.");
+                }
+            }
+            writer.Write(
+                bytes,
+                new RawBlockLayout
+                {
+                    Offset = offset,
+                    Width = (int) data.FullImageWidth,
+                    Height = bandHeight,
+                    Stride = bytesPerRow > 0 ? bytesPerRow : null,
+                    BitsPerPixel = (int) data.BitsPerPixel,
+                    BytesPerPixel = data.BitsPerPixel >= 8 ? (int) data.BitsPerPixel / 8 : null,
+                    PixelFormat = header.PixelFormat,
+                    SubPixelType = header.SubPixelType,
+                    FrameType = header.FrameType,
+                    PageIndex = pageIndex,
+                    FrameIndex = 0
+                });
+
+            lock (_rawGate)
+            {
+                _rawBytes += bytes.Length;
+                var expectedBytes = header.Height is { } height && header.Stride is { } stride
+                    ? checked((long) height * stride)
+                    : 0;
+                if (expectedBytes > 0)
+                {
+                    if (_rawBytes > expectedBytes)
+                    {
+                        throw new DeviceException("Apple returned more raw data than the declared image layout.");
+                    }
+                    progress = Math.Min(1, _rawBytes / (double) expectedBytes);
+                    shouldFinish = _rawBytes == expectedBytes;
+                }
+            }
+        }
+        finally
+        {
+            _rawWriterOperationGate.Release();
+        }
+
+        if (progress is { } value)
+        {
+            _scanEvents.PageProgress(value);
+        }
+        if (shouldFinish)
+        {
+            FinishRawPage();
+        }
+    }
+
+    private RawScanArtifactHeader CreateRawHeader(ICScannerBandData data)
+    {
+        var (pixelFormat, subPixelType, frameType) = GetPixelDetails(data);
+        return new RawScanArtifactHeader
+        {
+            Type = RawScanArtifactType.AppleBand,
+            ContentType = "application/vnd.naps2.apple-raw",
+            FileExtension = ".apple-raw",
+            PixelFormat = pixelFormat,
+            SubPixelType = subPixelType,
+            FrameType = frameType,
+            Width = (int) data.FullImageWidth,
+            Height = (int) data.FullImageHeight,
+            Stride = (int) data.BytesPerRow,
+            HorizontalResolution = (double) _resolution,
+            VerticalResolution = (double) _resolution,
+            PageCount = 1,
+            SourceId = _device.Uuid
+        };
+    }
+
+    private RawScanArtifactMetadata CreateRawMetadata()
+    {
+        var header = _rawHeader!;
+        var additionalMetadata = new Dictionary<string, string?>
+        {
+            [AppleRawScanDecoder.ColorSyncProfileKey] = _rawColorSyncProfile,
+            [AppleRawScanDecoder.PixelDataTypeKey] = GetRawPixelDataType(header.PixelFormat),
+            [AppleRawScanDecoder.BitsPerComponentKey] = GetRawBitsPerComponent(header).ToString(),
+            [AppleRawScanDecoder.BitsPerPixelKey] = GetRawBitsPerPixel(header).ToString(),
+            [AppleRawScanDecoder.NumComponentsKey] = GetRawNumComponents(header).ToString(),
+            [AppleRawScanDecoder.BytesPerRowKey] = header.Stride?.ToString(),
+            [AppleRawScanDecoder.PageIndexKey] = _rawPageIndex.ToString()
+        };
+        return new RawScanArtifactMetadata
+        {
+            ByteLength = _rawBytes,
+            Width = header.Width,
+            Height = header.Height,
+            HorizontalResolution = header.HorizontalResolution,
+            VerticalResolution = header.VerticalResolution,
+            PixelFormat = header.PixelFormat,
+            SubPixelType = header.SubPixelType,
+            FrameType = header.FrameType,
+            PageCount = 1,
+            FrameCount = 1,
+            PageSide = RawScanPageSide.Unknown,
+            IsDuplex = _options.PaperSource == PaperSource.Duplex,
+            DeviceId = _device.Uuid,
+            SourceId = _device.Uuid,
+            ContentType = header.ContentType,
+            AdditionalMetadata = additionalMetadata
+        };
+    }
+
+    private static (ImagePixelFormat PixelFormat, SubPixelType? SubPixelType, RawScanFrameType FrameType)
+        GetPixelDetails(ICScannerBandData data)
+    {
+        return (data.PixelDataType, data.NumComponents, data.BitsPerComponent) switch
+        {
+            (ICScannerPixelDataType.BW, 1, 1) =>
+                (ImagePixelFormat.BW1, SubPixelType.Bit, RawScanFrameType.Gray),
+            (ICScannerPixelDataType.Gray, 1, 8) =>
+                (ImagePixelFormat.Gray8, SubPixelType.Gray, RawScanFrameType.Gray),
+            (ICScannerPixelDataType.Rgb, 3, 8) =>
+                (ImagePixelFormat.RGB24, SubPixelType.Rgb, RawScanFrameType.Image),
+            (ICScannerPixelDataType.Rgb, 4, 8) =>
+                (ImagePixelFormat.RGB24, SubPixelType.Rgbn, RawScanFrameType.Image),
+            _ => (ImagePixelFormat.Unknown, null, RawScanFrameType.Unknown)
+        };
+    }
+
+    private static string GetRawPixelDataType(ImagePixelFormat pixelFormat) => pixelFormat switch
+    {
+        ImagePixelFormat.BW1 => nameof(ICScannerPixelDataType.BW),
+        ImagePixelFormat.Gray8 => nameof(ICScannerPixelDataType.Gray),
+        ImagePixelFormat.RGB24 or ImagePixelFormat.ARGB32 => nameof(ICScannerPixelDataType.Rgb),
+        _ => "Unknown"
+    };
+
+    private static int GetRawBitsPerComponent(RawScanArtifactHeader header) => header.PixelFormat switch
+    {
+        ImagePixelFormat.BW1 => 1,
+        _ => 8
+    };
+
+    private static int GetRawBitsPerPixel(RawScanArtifactHeader header) => header.SubPixelType?.BitsPerPixel ??
+                                                                          (header.PixelFormat switch
+                                                                          {
+                                                                              ImagePixelFormat.BW1 => 1,
+                                                                              ImagePixelFormat.Gray8 => 8,
+                                                                              ImagePixelFormat.RGB24 => 24,
+                                                                              ImagePixelFormat.ARGB32 => 32,
+                                                                              _ => 0
+                                                                          });
+
+    private static int GetRawNumComponents(RawScanArtifactHeader header) => header.PixelFormat switch
+    {
+        ImagePixelFormat.BW1 or ImagePixelFormat.Gray8 => 1,
+        ImagePixelFormat.RGB24 when header.SubPixelType == SubPixelType.Rgbn => 4,
+        ImagePixelFormat.RGB24 => 3,
+        ImagePixelFormat.ARGB32 => 4,
+        _ => 0
+    };
+
+    private string? CopyColorSyncProfile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return null;
+        }
+        try
+        {
+            return Convert.ToBase64String(File.ReadAllBytes(path));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Could not copy ColorSync profile {Path}", path);
+            return null;
         }
     }
 
@@ -251,9 +571,20 @@ internal class DeviceOperator : ICScannerDeviceDelegate
 
     public override void DidCompleteScan(ICScannerDevice scanner, NSError? error)
     {
-        _logger.LogDebug("DidCompleteScan {Error}", error);
-        SetResultOrError(_scanSuccessTcs, error);
-        SetResultOrError(_scanCompleteTcs, error);
+        try
+        {
+            _logger.LogDebug("DidCompleteScan {Error}", error);
+            if (_rawMode && error != null)
+            {
+                RecordRawFailure(GetException(error));
+            }
+            SetResultOrError(_scanSuccessTcs, error);
+            SetResultOrError(_scanCompleteTcs, error);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeCallbackException(ex);
+        }
     }
 
     private void SetResultOrError(TaskCompletionSource tcs, NSError? error)
@@ -454,6 +785,449 @@ internal class DeviceOperator : ICScannerDeviceDelegate
         }
     }
 
+    public async Task ScanRaw()
+    {
+        try
+        {
+            _device.Delegate = this;
+            _logger.LogDebug("ICC: Opening session for raw acquisition");
+            _device.RequestOpenSession();
+            await _openSessionTcs.Task;
+            _logger.LogDebug("ICC: Waiting for ready");
+            await _readyTcs.Task;
+            _logger.LogDebug("ICC: Selecting unit");
+            _unit = await SelectUnit(_options.PaperSource is PaperSource.Flatbed or PaperSource.Auto
+                ? ICScannerFunctionalUnitType.Flatbed
+                : ICScannerFunctionalUnitType.DocumentFeeder);
+            if (_unit is ICScannerFunctionalUnitDocumentFeeder { SupportsDuplexScanning: true } feederUnit)
+            {
+                feederUnit.DuplexScanningEnabled = _options.PaperSource == PaperSource.Duplex;
+            }
+            _logger.LogDebug("ICC: Setting raw scan parameters");
+            SetScanArea(_unit);
+            _resolution = GetClosestResolution((nuint) _options.Dpi, _unit);
+            _unit.Resolution = _resolution;
+            _unit.BitDepth = _options.BitDepth == BitDepth.BlackAndWhite
+                ? ICScannerBitDepth.Bits1
+                : ICScannerBitDepth.Bits8;
+            _unit.PixelDataType = _options.BitDepth switch
+            {
+                BitDepth.BlackAndWhite => ICScannerPixelDataType.BW,
+                BitDepth.Grayscale => ICScannerPixelDataType.Gray,
+                _ => ICScannerPixelDataType.Rgb
+            };
+            _device.TransferMode = ICScannerTransferMode.MemoryBased;
+            _device.MaxMemoryBandSize = 65536;
+            _rawSink!.ConfigurationApplied(new DriverProcessingResult());
+            _logger.LogDebug("ICC: Requesting raw scan");
+            _device.RequestScan();
+            await _scanSuccessTcs.Task;
+            ThrowIfRawFailed();
+            // Most scans complete the artifact when FullImageHeight is reached. The completion callback is also the
+            // authoritative boundary for devices that report an unknown or padded height.
+            FinishRawPage();
+            await DrainRawArtifactsAsync(propagateErrors: true);
+            if (GetRawCompletionTaskCount() == 0 &&
+                _unit is ICScannerFunctionalUnitDocumentFeeder { DocumentLoaded: false })
+            {
+                _logger.LogDebug("ICC: No pages in feeder");
+                throw new DeviceFeederEmptyException();
+            }
+            _logger.LogDebug("ICC: Closing raw scan session");
+            _device.RequestCloseSession();
+            await _closeTcs.Task;
+            _logger.LogDebug("ICC: Raw scan success");
+        }
+        catch (TaskCanceledException ex)
+        {
+            RecordRawFailure(ex);
+            await CancelRawScanAndWait();
+            await AbortRawPage();
+            await DrainRawArtifactsAsync();
+            _logger.LogDebug("ICC: Raw scan cancelled");
+        }
+        catch (Exception ex)
+        {
+            RecordRawFailure(ex);
+            await CancelRawScanAndWait();
+            await AbortRawPage();
+            await DrainRawArtifactsAsync();
+            throw;
+        }
+        finally
+        {
+            if (_rawMode)
+            {
+                try
+                {
+                    await AbortRawPage();
+                    await DrainRawArtifactsAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "ICC: Error draining raw artifact writers");
+                }
+            }
+            if (_device.HasOpenSession)
+            {
+                _logger.LogDebug("ICC: Closing raw session (in finally)");
+                _device.RequestCloseSession();
+            }
+        }
+    }
+
+    private void FinishRawPage()
+    {
+        IRawScanArtifactWriter writer;
+        RawScanArtifactMetadata metadata;
+        Task previousCompletion;
+        lock (_rawGate)
+        {
+            if (_rawWriter == null || _rawHeader == null)
+            {
+                return;
+            }
+
+            ThrowIfRawFailedNoLock();
+            var expectedBytes = GetExpectedRawBytes(_rawHeader);
+            if (expectedBytes > 0 && _rawBytes != expectedBytes)
+            {
+                throw new DeviceException(
+                    $"Apple returned {_rawBytes} raw bytes for an image that declares {expectedBytes} bytes.");
+            }
+
+            writer = _rawWriter;
+            metadata = CreateRawMetadata();
+            previousCompletion = _lastRawCompletionTask;
+            _rawWriter = null;
+            _rawHeader = null;
+            _rawBytes = 0;
+            _rawColorSyncProfile = null;
+            _rawPageIndex++;
+        }
+
+        var completionTask = CompleteAndDisposeRawWriter(writer, metadata, previousCompletion);
+        lock (_rawGate)
+        {
+            _lastRawCompletionTask = completionTask;
+            _rawCompletionTasks.Add(completionTask);
+        }
+    }
+
+    private async Task AbortRawPage()
+    {
+        IRawScanArtifactWriter? writer;
+        lock (_rawGate)
+        {
+            writer = _rawWriter;
+            if (writer == null)
+            {
+                return;
+            }
+
+            _rawWriter = null;
+            _rawHeader = null;
+            _rawBytes = 0;
+            _rawColorSyncProfile = null;
+        }
+
+        await AbortAndDisposeTrackedRawWriter(writer);
+    }
+
+    private async Task CompleteAndDisposeRawWriter(IRawScanArtifactWriter writer,
+        RawScanArtifactMetadata metadata, Task previousCompletion)
+    {
+        try
+        {
+            await previousCompletion;
+            await _scanSuccessTcs.Task;
+            _rawCancellationToken.ThrowIfCancellationRequested();
+
+            var ownsWriter = false;
+            await _rawWriterOperationGate.WaitAsync();
+            try
+            {
+                lock (_rawGate)
+                {
+                    if (!_rawWriters.Contains(writer))
+                    {
+                        return;
+                    }
+                    ThrowIfRawFailedNoLock();
+                }
+                _rawCancellationToken.ThrowIfCancellationRequested();
+                await writer.CompleteAsync(metadata, _rawCancellationToken);
+                ThrowIfRawFailed();
+                lock (_rawGate)
+                {
+                    ownsWriter = _rawWriters.Remove(writer);
+                }
+            }
+            finally
+            {
+                _rawWriterOperationGate.Release();
+            }
+
+            if (ownsWriter)
+            {
+                await writer.DisposeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            RecordRawFailure(ex);
+            await AbortAndDisposeTrackedRawWriter(writer);
+            throw;
+        }
+    }
+
+    private async Task AbortAndDisposeTrackedRawWriter(IRawScanArtifactWriter writer)
+    {
+        var ownsWriter = false;
+        try
+        {
+            await _rawWriterOperationGate.WaitAsync();
+            try
+            {
+                lock (_rawGate)
+                {
+                    ownsWriter = _rawWriters.Remove(writer);
+                }
+                if (ownsWriter)
+                {
+                    await writer.AbortAsync(CancellationToken.None);
+                }
+            }
+            finally
+            {
+                _rawWriterOperationGate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            // Cleanup must not mask the acquisition or completion failure that caused it.
+            _logger.LogDebug(ex, "ICC: Error aborting raw artifact writer");
+        }
+        finally
+        {
+            if (ownsWriter)
+            {
+                try
+                {
+                    await writer.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "ICC: Error disposing raw artifact writer");
+                }
+            }
+        }
+    }
+
+    private async Task CancelRawScanAndWait()
+    {
+        try
+        {
+            if (_unit?.ScanInProgress != true)
+            {
+                return;
+            }
+
+            _cancelTcs = new TaskCompletionSource();
+            _logger.LogDebug("ICC: Cancelling raw scan");
+            try
+            {
+                _device.CancelScan();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "ICC: Error cancelling raw scan");
+            }
+            await Task.WhenAny(_scanCompleteTcs.Task, _cancelTcs.Task);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Error waiting for raw scan cancellation");
+        }
+    }
+
+    private Task DrainRawArtifactsAsync(bool propagateErrors = false)
+    {
+        return DrainRawArtifactsCoreAsync(propagateErrors);
+    }
+
+    private async Task DrainRawArtifactsCoreAsync(bool propagateErrors)
+    {
+        Task cleanupTask;
+        lock (_rawGate)
+        {
+            cleanupTask = _rawFailureCleanupTask;
+        }
+        try
+        {
+            await cleanupTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Error aborting raw artifact writers");
+        }
+
+        Exception? firstCompletionError = null;
+        while (true)
+        {
+            Task[] completionTasks;
+            lock (_rawGate)
+            {
+                completionTasks = _rawCompletionTasks.ToArray();
+            }
+            if (completionTasks.Length == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.WhenAll(completionTasks);
+            }
+            catch (Exception ex)
+            {
+                firstCompletionError ??= ex;
+                _logger.LogDebug(ex, "ICC: Error completing raw artifact writers");
+            }
+
+            lock (_rawGate)
+            {
+                if (_rawCompletionTasks.Count == completionTasks.Length)
+                {
+                    if (propagateErrors && firstCompletionError != null)
+                    {
+                        throw firstCompletionError;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    private int GetRawCompletionTaskCount()
+    {
+        lock (_rawGate)
+        {
+            return _rawCompletionTasks.Count;
+        }
+    }
+
+    private static long GetExpectedRawBytes(RawScanArtifactHeader header) =>
+        header.Height is { } height && header.Stride is { } stride && height > 0 && stride > 0
+            ? checked((long) height * stride)
+            : 0;
+
+    private void RecordRawFailure(Exception exception)
+    {
+        TaskCompletionSource? cleanupStarted = null;
+        lock (_rawGate)
+        {
+            if (_rawFailure != null)
+            {
+                return;
+            }
+
+            _rawFailure = exception;
+            cleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _rawFailureCleanupTask = cleanupStarted.Task;
+        }
+
+        try
+        {
+            _scanSuccessTcs.TrySetException(exception);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Error recording raw scan failure");
+        }
+
+        try
+        {
+            _device.CancelScan();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Error stopping failed raw scan");
+        }
+
+        _ = StartRawFailureCleanupAsync(cleanupStarted!);
+    }
+
+    private async Task StartRawFailureCleanupAsync(TaskCompletionSource cleanupStarted)
+    {
+        try
+        {
+            await AbortTrackedRawWritersAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ICC: Error cleaning up raw artifact writers");
+        }
+        finally
+        {
+            cleanupStarted.TrySetResult();
+        }
+    }
+
+    private async Task AbortTrackedRawWritersAsync()
+    {
+        IRawScanArtifactWriter[] writers;
+        lock (_rawGate)
+        {
+            writers = _rawWriters.ToArray();
+        }
+        foreach (var writer in writers)
+        {
+            await AbortAndDisposeTrackedRawWriter(writer);
+        }
+    }
+
+    private void ThrowIfRawFailed()
+    {
+        lock (_rawGate)
+        {
+            ThrowIfRawFailedNoLock();
+        }
+    }
+
+    private void ThrowIfRawFailedNoLock()
+    {
+        if (_rawFailure is { } failure)
+        {
+            throw new InvalidOperationException("Apple raw scan has failed.", failure);
+        }
+    }
+
+    private void HandleNativeCallbackException(Exception exception)
+    {
+        if (_rawMode)
+        {
+            RecordRawFailure(exception);
+        }
+        else
+        {
+            _logger.LogDebug(exception, "ICC: Native callback failed");
+        }
+    }
+
+    private static ScanOptions ToScanOptions(RawScanOptions options) => new()
+    {
+        Driver = options.Driver,
+        Device = options.Device,
+        PaperSource = options.PaperSource,
+        Dpi = options.Dpi,
+        PageSize = options.PageSize,
+        BitDepth = options.BitDepth,
+        PageAlign = options.PageAlign,
+        UseNativeUI = options.UseNativeUI,
+        DialogParent = options.DialogParent
+    };
+
     private ICScannerDocumentType GetDocumentTypeFromPageSize(PageSize? pageSize)
     {
         // TODO: Maybe some tolerance, e.g. if translating over EsclScanServer?
@@ -527,6 +1301,28 @@ internal class DeviceOperator : ICScannerDeviceDelegate
     {
         if (disposing)
         {
+            if (_rawMode)
+            {
+                bool hasRawWriters;
+                lock (_rawGate)
+                {
+                    hasRawWriters = _rawWriters.Count > 0 || _rawWriter != null;
+                }
+                if (hasRawWriters || _unit?.ScanInProgress == true)
+                {
+                    RecordRawFailure(new ObjectDisposedException(nameof(DeviceOperator)));
+                }
+                try
+                {
+                    CancelRawScanAndWait().GetAwaiter().GetResult();
+                    AbortRawPage().GetAwaiter().GetResult();
+                    DrainRawArtifactsAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "ICC: Error draining raw artifact writers during dispose");
+                }
+            }
             _device.Delegate = null;
         }
         base.Dispose(disposing);

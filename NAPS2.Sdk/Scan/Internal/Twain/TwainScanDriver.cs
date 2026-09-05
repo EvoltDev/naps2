@@ -60,22 +60,50 @@ internal class TwainScanDriver : IScanDriver
         });
     }
 
+    public Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents,
+        IRawScanSink sink)
+    {
+        CheckArch(options.TwainOptions.Dsm);
+        return Task.Run(async () =>
+        {
+            var controller = GetTwainController();
+            try
+            {
+                await controller.StartRawScan(options, scanEvents, sink, cancelToken);
+            }
+            finally
+            {
+                EnableWindow(options.DialogParent, options.UseNativeUI, options.TwainOptions.ShowProgress);
+            }
+        });
+    }
+
     private void EnableWindow(ScanOptions options)
     {
-        if (options.DialogParent != IntPtr.Zero && (options.UseNativeUI || options.TwainOptions.ShowProgress))
+        EnableWindow(options.DialogParent, options.UseNativeUI, options.TwainOptions.ShowProgress);
+    }
+
+    private void EnableWindow(IntPtr dialogParent, bool useNativeUi, bool showProgress)
+    {
+        if (dialogParent != IntPtr.Zero && (useNativeUi || showProgress))
         {
             // At the Windows API level, a modal window is implemented by doing two things:
             // 1. Setting the parent on the child window
             // 2. Disabling the parent window
             // The worker is supposed to re-enable the window before returning, but in case the process dies or
             // some other problem occurs, here we make sure that happens.
-            Win32.EnableWindow(options.DialogParent, true);
+            Win32.EnableWindow(dialogParent, true);
             // We also want to make sure the main NAPS2 window is in the foreground
-            Win32.SetForegroundWindow(options.DialogParent);
+            Win32.SetForegroundWindow(dialogParent);
         }
     }
 
     private void CheckArch(ScanOptions options)
+    {
+        CheckArch(options.TwainOptions.Dsm);
+    }
+
+    private void CheckArch(TwainDsm dsm)
     {
         if (_scanningContext.WorkerFactory != null)
         {
@@ -87,7 +115,6 @@ internal class TwainScanDriver : IScanDriver
             // No need for an x86 worker (i.e. if we're on arm64)
             return;
         }
-        var dsm = options.TwainOptions.Dsm;
         if (dsm is TwainDsm.New or TwainDsm.Old && Environment.Is64BitProcess)
         {
             throw new InvalidOperationException(
@@ -101,7 +128,11 @@ internal class TwainScanDriver : IScanDriver
         }
     }
 
-    private ITwainController GetTwainController(ScanOptions options)
+    private ITwainController GetTwainController(ScanOptions options) => GetTwainController();
+
+    private ITwainController GetTwainController(RawScanOptions options) => GetTwainController();
+
+    private ITwainController GetTwainController()
     {
         if (_scanningContext.WorkerFactory == null)
         {

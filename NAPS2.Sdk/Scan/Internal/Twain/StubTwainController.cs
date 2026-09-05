@@ -21,4 +21,10 @@ internal class StubTwainController : ITwainController
     {
         throw new NotSupportedException();
     }
+
+    public Task StartRawScan(RawScanOptions options, IScanEvents scanEvents, IRawScanSink sink,
+        CancellationToken cancelToken)
+    {
+        throw new NotSupportedException();
+    }
 }

@@ -192,6 +192,103 @@ internal class WorkerServiceImpl : WorkerService.WorkerServiceBase
         await sequencedWriter.WaitForCompletion();
     }
 
+    /// <summary>
+    /// Runs a raw acquisition in the worker process. This protocol forwards
+    /// driver bytes and metadata only; ProcessedImage serialization and all
+    /// post-processing remain on the existing Scan path.
+    /// </summary>
+    public override async Task ScanRaw(RawScanRequest request,
+        IServerStreamWriter<RawScanResponse> responseStream, ServerCallContext context)
+    {
+        using var callRef = StartCall();
+        var pump = new RawWorkerResponsePump(responseStream, context.CancellationToken);
+        RawWorkerSink? sink = null;
+        try
+        {
+            if (request.ProtocolVersion != RawWorkerProtocol.Version)
+            {
+                throw new InvalidOperationException(
+                    $"Unsupported raw worker protocol version {request.ProtocolVersion}; " +
+                    $"expected {RawWorkerProtocol.Version}.");
+            }
+
+            // Negotiate before touching a scanner so an incompatible worker
+            // fails without starting acquisition.
+            await pump.Enqueue(new RawScanResponse
+            {
+                Protocol = RawWorkerWireMapper.ToProtocol(request.Features)
+            }).ConfigureAwait(false);
+
+            sink = new RawWorkerSink(pump);
+            var scanEvents = new ScanEvents(
+                () => pump.Enqueue(new RawScanResponse
+                {
+                    PageStart = new PageStartEvent()
+                }),
+                progress => pump.Enqueue(new RawScanResponse
+                {
+                    Progress = new ProgressEvent
+                    {
+                        Value = progress
+                    }
+                }),
+                (iconUri, connectionUri) => pump.Enqueue(new RawScanResponse
+                {
+                    DeviceUriChanged = new DeviceUriChangedEvent
+                    {
+                        IconUri = iconUri,
+                        ConnectionUri = connectionUri
+                    }
+                })
+            );
+            await _remoteScanController.ScanRaw(request.OptionsXml.FromXml<RawScanOptions>(),
+                context.CancellationToken, scanEvents, sink).ConfigureAwait(false);
+
+            // A driver must complete each artifact. Abort anything left open
+            // so the client cannot mistake a truncated artifact for success.
+            await sink.AbortOpenArtifactsAsync("The driver ended before completing the raw artifact.")
+                .ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            if (sink != null)
+            {
+                try
+                {
+                    await sink.AbortOpenArtifactsAsync("The raw scan failed.").ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Keep the original scan/transport error as the stream
+                    // error. The pump also releases any blocked producers.
+                }
+            }
+            try
+            {
+                await pump.Enqueue(new RawScanResponse { Error = RemotingHelper.ToError(e) })
+                    .ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The client may already have canceled or the worker stream
+                // may have failed. In either case there is no response to
+                // deliver.
+            }
+        }
+        finally
+        {
+            try
+            {
+                await pump.CompleteAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A failed stream is already represented by the transport;
+                // do not replace it with a second completion exception.
+            }
+        }
+    }
+
     public override Task<LoadMapiResponse> LoadMapi(LoadMapiRequest request,
         ServerCallContext context)
     {

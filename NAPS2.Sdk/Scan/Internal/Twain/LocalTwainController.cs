@@ -134,6 +134,7 @@ internal class LocalTwainController : ITwainController
 
                     return new ScanCaps
                     {
+                        DriverProcessingCaps = TwainDriverProcessing.QueryCaps(ds, _logger),
                         MetadataCaps = new MetadataCaps
                         {
                             Manufacturer = ds.Manufacturer,
@@ -234,10 +235,41 @@ internal class LocalTwainController : ITwainController
         }
     }
 
+    public async Task StartRawScan(RawScanOptions options, IScanEvents scanEvents, IRawScanSink sink,
+        CancellationToken cancelToken)
+    {
+        if (options.TwainOptions.Dsm != TwainDsm.Old)
+        {
+            TwainDsmSetup.Run();
+        }
+        try
+        {
+            await InternalRawScan(options.TwainOptions.Dsm, options, cancelToken, scanEvents, sink);
+        }
+        catch (DeviceNotFoundException)
+        {
+            if (options.TwainOptions.Dsm != TwainDsm.Old)
+            {
+                await InternalRawScan(TwainDsm.Old, options, cancelToken, scanEvents, sink);
+            }
+            else
+            {
+                throw;
+            }
+        }
+    }
+
     private async Task InternalScan(TwainDsm dsm, ScanOptions options, CancellationToken cancelToken,
         ITwainEvents twainEvents)
     {
         var runner = new TwainScanRunner(_logger, TwainAppId, dsm, options, cancelToken, twainEvents);
+        await runner.Run();
+    }
+
+    private async Task InternalRawScan(TwainDsm dsm, RawScanOptions options, CancellationToken cancelToken,
+        IScanEvents scanEvents, IRawScanSink sink)
+    {
+        var runner = new TwainScanRunner(_logger, TwainAppId, dsm, options, cancelToken, scanEvents, sink);
         await runner.Run();
     }
 }

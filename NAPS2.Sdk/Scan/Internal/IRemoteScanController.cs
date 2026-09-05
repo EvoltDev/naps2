@@ -12,4 +12,6 @@ internal interface IRemoteScanController
     Task<ScanCaps> GetCaps(ScanOptions options, CancellationToken cancelToken);
 
     Task Scan(ScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents, Action<ProcessedImage, PostProcessingContext> callback);
+
+    Task ScanRaw(RawScanOptions options, CancellationToken cancelToken, IScanEvents scanEvents, IRawScanSink sink);
 }
