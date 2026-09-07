@@ -486,16 +486,10 @@ internal class TwainScanRunner
         // Page Size, Horizontal Align
         float pageWidth = _options.PageSize!.WidthInThousandthsOfAnInch / 1000.0f;
         float pageHeight = _options.PageSize.HeightInThousandthsOfAnInch / 1000.0f;
-        var pageMaxWidthFixed = source.Capabilities.ICapPhysicalWidth.GetCurrent();
-        float pageMaxWidth = pageMaxWidthFixed.Whole + (pageMaxWidthFixed.Fraction / (float) UInt16.MaxValue);
-
-        float horizontalOffset = 0.0f;
-        if (_options.PageAlign == HorizontalAlign.Center)
-            horizontalOffset = (pageMaxWidth - pageWidth) / 2;
-        else if (_options.PageAlign == HorizontalAlign.Left)
-            horizontalOffset = (pageMaxWidth - pageWidth);
-
         source.Capabilities.ICapUnits.SetValue(Unit.Inches);
+        var horizontalOffset = GetHorizontalOffset(_options.PageAlign, pageWidth,
+            () => source.Capabilities.ICapPhysicalWidth.GetCurrent());
+
         source.DGImage.ImageLayout.Get(out TWImageLayout imageLayout);
         imageLayout.Frame = new TWFrame
         {
@@ -599,21 +593,30 @@ internal class TwainScanRunner
         }
     }
 
-    private void SetClosest(ICapWrapper<TWFix32> cap, int value)
+    internal static float GetHorizontalOffset(HorizontalAlign align, float pageWidth, Func<TWFix32> getPhysicalWidth)
     {
-        if (!cap.CanGet)
+        if (align == HorizontalAlign.Right) return 0;
+
+        var physicalWidth = (float)(double)getPhysicalWidth();
+        if (physicalWidth <= 0)
         {
-            cap.SetValue(value);
-            return;
+            throw new DeviceException("TWAIN capability ICapPhysicalWidth did not return a usable paper width for alignment.");
         }
-        var possibleValues = cap.GetValues().ToList();
-        if (possibleValues.Count == 0)
+        var remainingWidth = Math.Max(0, physicalWidth - pageWidth);
+        return align == HorizontalAlign.Center ? remainingWidth / 2 : remainingWidth;
+    }
+
+    internal static void SetClosest(ICapWrapper<TWFix32> cap, int value)
+    {
+        var possibleValues = cap.CanGet ? cap.GetValues().ToList() : [];
+        var closest = possibleValues.Count == 0
+            ? (TWFix32)value
+            : possibleValues.OrderBy(v => Math.Abs(v - value)).First();
+        var result = cap.SetValue(closest);
+        if (result != ReturnCode.Success && result != ReturnCode.CheckStatus)
         {
-            cap.SetValue(value);
-            return;
+            throw new DeviceException($"TWAIN capability {cap.Capability} rejected resolution {closest}: {result}.");
         }
-        var closest = possibleValues.OrderBy(v => Math.Abs(v - value)).First();
-        cap.SetValue(closest);
     }
 }
 
