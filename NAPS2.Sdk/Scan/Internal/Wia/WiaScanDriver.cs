@@ -14,6 +14,12 @@ internal class WiaScanDriver : IScanDriver
 {
     private readonly ScanningContext _scanningContext;
 
+    private static int? ReadFeedOrientation(WiaItem item)
+    {
+        var value = item.Properties.GetOrNull(WiaFeedOrientationConfiguration.OrientationPropertyId)?.Value;
+        return value is int orientation ? orientation : null;
+    }
+
     public WiaScanDriver(ScanningContext scanningContext)
     {
         _scanningContext = scanningContext;
@@ -464,9 +470,13 @@ internal class WiaScanDriver : IScanDriver
                 SafeSetPropertyClosest(item, WiaPropertyId.IPS_XRES, ref xRes);
                 SafeSetPropertyClosest(item, WiaPropertyId.IPS_YRES, ref yRes);
 
+                WiaFeedOrientationConfiguration.Apply(_options.WiaOptions.FeedOrientation,
+                    value => item.SetProperty(WiaFeedOrientationConfiguration.OrientationPropertyId, value),
+                    () => ReadFeedOrientation(item));
                 var pageSize = _options.PageSize ?? PageSize.Letter;
-                int pageWidth = pageSize.WidthInThousandthsOfAnInch * xRes / 1000;
-                int pageHeight = pageSize.HeightInThousandthsOfAnInch * yRes / 1000;
+                var dimensions = WiaFeedOrientationConfiguration.GetPageDimensions(pageSize, _options.WiaOptions.FeedOrientation);
+                int pageWidth = dimensions.Width * xRes / 1000;
+                int pageHeight = dimensions.Height * yRes / 1000;
                 var (horizontalSize, verticalSize) = GetScanArea(device, item,
                     _options.PaperSource == PaperSource.Flatbed);
                 int pageMaxWidth = horizontalSize * xRes / 1000;
@@ -497,6 +507,8 @@ internal class WiaScanDriver : IScanDriver
             var result = _options.UseNativeUI
                 ? processing.NeutralizeRequestedSettings("WIA native configuration UI owns the acquisition settings.")
                 : processing.Apply();
+            if (!_options.UseNativeUI)
+                WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
             _sink.ConfigurationApplied(result);
         }
 
@@ -1001,8 +1013,12 @@ internal class WiaScanDriver : IScanDriver
                 _logger.LogDebug($"Correcting DPI from {_options.Dpi}x{_options.Dpi} to {xRes}x{yRes}");
             }
 
-            int pageWidth = _options.PageSize!.WidthInThousandthsOfAnInch * xRes / 1000;
-            int pageHeight = _options.PageSize.HeightInThousandthsOfAnInch * yRes / 1000;
+            WiaFeedOrientationConfiguration.Apply(_options.WiaOptions.FeedOrientation,
+                value => item.SetProperty(WiaFeedOrientationConfiguration.OrientationPropertyId, value),
+                () => ReadFeedOrientation(item));
+            var dimensions = WiaFeedOrientationConfiguration.GetPageDimensions(_options.PageSize!, _options.WiaOptions.FeedOrientation);
+            int pageWidth = dimensions.Width * xRes / 1000;
+            int pageHeight = dimensions.Height * yRes / 1000;
 
             var (horizontalSize, verticalSize) = GetScanArea(device, item, _options.PaperSource == PaperSource.Flatbed);
 
@@ -1041,6 +1057,7 @@ internal class WiaScanDriver : IScanDriver
             // applies any required WIA value conversion, and verifies the value through a readback.
             _ = new WiaSourceConfiguration(device, item, _options.WiaOptions.ProcessingOptions, _options.BitDepth,
                 _logger).Apply();
+            WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
         }
 
         private void SafeSetProperty(WiaItemBase item, int propId, int value)

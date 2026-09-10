@@ -300,7 +300,17 @@ internal sealed class TwainRawScanSink : IDisposable
     {
         var imageData = ToImageData(imageInfo) ?? _pendingImageData;
         var (pixelFormat, subPixelType) = MapPixelFormat(imageData);
-        var pageSide = ReadPageSide(transfer);
+        // Read results for every completed transfer. This also captures barcode detection configured inside the
+        // source's native TWAIN UI, where ConfigureSource deliberately leaves the driver's settings untouched.
+        var extendedImageMetadata = TwainExtendedImageMetadataReader.Read(transfer);
+        var additionalMetadata = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["twain.transferType"] = type.ToString()
+        };
+        foreach (var (key, value) in extendedImageMetadata.AdditionalMetadata)
+        {
+            additionalMetadata[key] = value;
+        }
         var metadata = new RawScanArtifactMetadata
         {
             ByteLength = _currentByteLength,
@@ -315,14 +325,11 @@ internal sealed class TwainRawScanSink : IDisposable
             ContentType = format == ImageFileFormat.Bmp ? "image/bmp" : null,
             PageCount = 1,
             FrameCount = 1,
-            PageSide = pageSide,
+            PageSide = extendedImageMetadata.PageSide,
             IsDuplex = _options.PaperSource == PaperSource.Duplex,
             DeviceId = _options.Device?.ID,
             SourceId = _options.Device?.ID,
-            AdditionalMetadata = new Dictionary<string, string?>(StringComparer.Ordinal)
-            {
-                ["twain.transferType"] = type.ToString()
-            }
+            AdditionalMetadata = additionalMetadata
         };
         return metadata;
     }
@@ -365,29 +372,6 @@ internal sealed class TwainRawScanSink : IDisposable
         FileFormat.Jfif => ImageFileFormat.Jpeg,
         _ => ImageFileFormat.Unknown
     };
-
-    private static RawScanPageSide ReadPageSide(DataTransferredEventArgs? transfer)
-    {
-        if (transfer == null) return RawScanPageSide.Unknown;
-        try
-        {
-            var info = transfer.GetExtImageInfo(ExtendedImageInfo.PageSide).FirstOrDefault();
-            if (info.ReturnCode != ReturnCode.Success) return RawScanPageSide.Unknown;
-            var value = info.ReadValues().FirstOrDefault();
-            return Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture) switch
-            {
-                1 => RawScanPageSide.Front,
-                2 => RawScanPageSide.Back,
-                _ => RawScanPageSide.Unknown
-            };
-        }
-        catch
-        {
-            // Extended image information is optional and several sources reject the triplet even when they expose
-            // the capability. A missing side must remain unknown so the caller cannot pair duplex pages incorrectly.
-            return RawScanPageSide.Unknown;
-        }
-    }
 
     private void ThrowIfDisposed()
     {

@@ -16,7 +16,7 @@
     <Import Project="..\NAPS2.Setup\targets\SdkPackageTargets.targets" />
 
     <PropertyGroup>
-        <PackageVersion>1.3.1-evoscan.2</PackageVersion>
+        <PackageVersion>1.3.1-evoscan.4</PackageVersion>
         <WorkerBuildTargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows</WorkerBuildTargetFramework>
         <WorkerBuildTargetFramework Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net10.0</WorkerBuildTargetFramework>
     </PropertyGroup>
