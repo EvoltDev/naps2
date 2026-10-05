@@ -19,6 +19,12 @@ public class ScanCaps
     public DriverCapabilityInventory? DriverCapabilityInventory { get; init; }
 
     /// <summary>
+    /// What the driver accepted when this scan's configuration was applied without acquiring, when requested with
+    /// <see cref="ScanOptions.ProbeDriverProcessing"/>.
+    /// </summary>
+    public DriverProcessingResult? DriverProcessingProbe { get; init; }
+
+    /// <summary>
     /// Metadata for the device.
     /// </summary>
     public MetadataCaps? MetadataCaps { get; init; }

@@ -78,6 +78,12 @@ internal class WiaScanDriver : IScanDriver
                     DriverCapabilityInventory = options.IncludeDriverCapabilityInventory
                         ? WiaCapabilityInventory.Read(device, processingItem, _scanningContext.Logger)
                         : null,
+                    // WIA's dry run covers the driver processing; the base acquisition properties are set when a
+                    // scan starts.
+                    DriverProcessingProbe = options.ProbeDriverProcessing && processingItem != null
+                        ? new WiaSourceConfiguration(device, processingItem, options.WiaOptions.ProcessingOptions,
+                            options.BitDepth, _scanningContext.Logger).Apply()
+                        : null,
                     MetadataCaps = new MetadataCaps
                     {
                         Manufacturer = device.Properties.GetOrNull(WiaPropertyId.DIP_VEND_DESC)?.Value as string,

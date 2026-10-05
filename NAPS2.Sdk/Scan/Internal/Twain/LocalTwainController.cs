@@ -137,11 +137,19 @@ internal class LocalTwainController : ITwainController
                     var feederCaps = supportsFeeder ? GetPerSourceCaps(ds) : null;
 
                     bool supportsDuplex = supportsFeeder && ds.Capabilities.CapDuplex.GetCurrent() != Duplex.None;
+                    var processingCaps = TwainDriverProcessing.QueryCaps(ds, _logger);
+
+                    // The dry run comes last: it changes the source's configuration, which the reads above must not
+                    // see. Nothing is acquired, and the source is closed right after.
+                    var probe = options.ProbeDriverProcessing && !options.UseNativeUI
+                        ? TwainScanRunner.ApplyImageConfiguration(ds, options, _logger)
+                        : null;
 
                     return new ScanCaps
                     {
-                        DriverProcessingCaps = TwainDriverProcessing.QueryCaps(ds, _logger),
+                        DriverProcessingCaps = processingCaps,
                         DriverCapabilityInventory = inventory,
+                        DriverProcessingProbe = probe,
                         MetadataCaps = new MetadataCaps
                         {
                             Manufacturer = ds.Manufacturer,

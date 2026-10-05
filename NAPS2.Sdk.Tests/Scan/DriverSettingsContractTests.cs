@@ -208,4 +208,38 @@ public class DriverSettingsContractTests
         Assert.Null(unknownAccess.CanSet);
         Assert.Equal(4.0, unknownAccess.Maximum!.RealValue);
     }
+
+    [Fact]
+    public void DryRunRequestAndResultRoundTrip()
+    {
+        var options = new ScanOptions { ProbeDriverProcessing = true };
+        var caps = new ScanCaps
+        {
+            DriverProcessingProbe = new DriverProcessingResult
+            {
+                Settings =
+                [
+                    new DriverProcessingSetting
+                    {
+                        Name = "edgeFill",
+                        Status = DriverProcessingStatus.Applied,
+                        RequestedValue = "white",
+                        EffectiveValue = "white",
+                        Binding = "TWAIN ICAP_IMAGEEDGEFILL (0x8095)",
+                        Evidence = "Kodak Alaris kdscust.h"
+                    }
+                ]
+            }
+        };
+
+        var optionsCopy = new XmlSerializer<ScanOptions>().DeserializeFromXDocument(
+            new XmlSerializer<ScanOptions>().SerializeToXDocument(options))!;
+        var capsCopy = new XmlSerializer<ScanCaps>().DeserializeFromXDocument(
+            new XmlSerializer<ScanCaps>().SerializeToXDocument(caps))!;
+
+        Assert.True(optionsCopy.ProbeDriverProcessing);
+        var setting = Assert.Single(capsCopy.DriverProcessingProbe!.Settings);
+        Assert.Equal("edgeFill", setting.Name);
+        Assert.Equal("Kodak Alaris kdscust.h", setting.Evidence);
+    }
 }
