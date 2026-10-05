@@ -185,9 +185,10 @@ internal static class KodakTwainBindings
                 Requires(ICapStreakRemovalEnabled, "ICAP_STREAKREMOVALENABLED", NativeValueType.Boolean, true))),
             new(Named(DriverSettingKeys.EdgeFill, ICapImageEdgeFill, "ICAP_IMAGEEDGEFILL", 195, EdgeFills)),
             new(EdgeFillWidth()),
+            // Documented as TW_UINT32; the i4250 with driver 16.4 reports TWTY_INT32 with the same 0-100 range.
             new(Integer(DriverSettingKeys.BlankPageContent, CapBlankPageContent, "CAP_BLANKPAGECONTENT", 240, 0, 100,
                 Requires(CapBlankPageMode, "CAP_BLANKPAGEMODE", NativeValueType.UInt16, BlankPageModeContent),
-                NativeValueType.UInt32)),
+                NativeValueType.UInt32) with { AlternativeTypes = [NativeValueType.Int32] }),
             new(Named(DriverSettingKeys.MultifeedSensitivity, CapUltrasonicSensitivity, "CAP_ULTRASONICSENSITIVITY",
                 320, UltrasonicSensitivities)),
             new(Integer(DriverSettingKeys.FeedTimeout, CapTransportTimeout, "CAP_TRANSPORTTIMEOUT", 350, 0, 300)),

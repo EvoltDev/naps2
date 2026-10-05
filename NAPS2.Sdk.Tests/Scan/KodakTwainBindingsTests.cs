@@ -247,14 +247,15 @@ public class KodakTwainBindingsTests
         Assert.Empty(access.Writes);
     }
 
-    [Fact]
-    public void SharpeningAcceptsTheInt32TypeTheI4250Reports()
+    [Theory]
+    [InlineData(DriverSettingKeys.Sharpening)]
+    [InlineData(DriverSettingKeys.BlankPageContent)]
+    public void DocumentedUInt32CapabilitiesAcceptTheInt32TypeTheI4250Reports(string key)
     {
-        var sharpening = KodakTwainBindings.Set.Bindings.Single(x => x.Binding.Key == DriverSettingKeys.Sharpening)
-            .Binding;
+        var binding = KodakTwainBindings.Set.Bindings.Single(x => x.Binding.Key == key).Binding;
 
-        Assert.Equal(NativeValueType.UInt32, sharpening.ValueType);
-        Assert.Equal([NativeValueType.Int32], sharpening.AlternativeTypes);
+        Assert.Equal(NativeValueType.UInt32, binding.ValueType);
+        Assert.Equal([NativeValueType.Int32], binding.AlternativeTypes);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(
