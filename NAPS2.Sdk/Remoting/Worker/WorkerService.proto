@@ -129,6 +129,9 @@ message RawScanProcessingSetting {
 	RawScanValue requestedValue = 3;
 	RawScanValue effectiveValue = 4;
 	string message = 5;
+	string binding = 6;
+	int32 executionLocation = 7;
+	string evidence = 8;
 }
 
 message RawScanSettingValue {

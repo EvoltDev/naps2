@@ -205,7 +205,10 @@ internal static class RawWorkerWireMapper
             Status = (int) setting.Status,
             RequestedValue = ToValue(setting.RequestedValue),
             EffectiveValue = ToValue(setting.EffectiveValue),
-            Message = setting.Message ?? ""
+            Message = setting.Message ?? "",
+            Binding = setting.Binding ?? "",
+            ExecutionLocation = (int) setting.ExecutionLocation,
+            Evidence = setting.Evidence ?? ""
         };
 
     private static DriverProcessingSetting FromProcessingSetting(RawScanProcessingSetting setting) =>
@@ -217,7 +220,13 @@ internal static class RawWorkerWireMapper
                 : DriverProcessingStatus.Unknown,
             RequestedValue = FromValue(setting.RequestedValue),
             EffectiveValue = FromValue(setting.EffectiveValue),
-            Message = string.IsNullOrEmpty(setting.Message) ? null : setting.Message
+            Message = string.IsNullOrEmpty(setting.Message) ? null : setting.Message,
+            Binding = string.IsNullOrEmpty(setting.Binding) ? null : setting.Binding,
+            // A newer worker may report a location this host does not know. Unknown is the only safe reading.
+            ExecutionLocation = Enum.IsDefined(typeof(DriverExecutionLocation), setting.ExecutionLocation)
+                ? (DriverExecutionLocation) setting.ExecutionLocation
+                : DriverExecutionLocation.Unknown,
+            Evidence = string.IsNullOrEmpty(setting.Evidence) ? null : setting.Evidence
         };
 
     private static RawScanSettingValue ToSettingValue(KeyValuePair<string, object?> setting) =>

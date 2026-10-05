@@ -13,6 +13,12 @@ public class ScanCaps
     public DriverProcessingCaps? DriverProcessingCaps { get; init; }
 
     /// <summary>
+    /// Every capability the driver reports, when requested with
+    /// <see cref="ScanOptions.IncludeDriverCapabilityInventory"/> and supported by the driver (TWAIN and WIA).
+    /// </summary>
+    public DriverCapabilityInventory? DriverCapabilityInventory { get; init; }
+
+    /// <summary>
     /// Metadata for the device.
     /// </summary>
     public MetadataCaps? MetadataCaps { get; init; }

@@ -165,6 +165,19 @@ internal sealed class WiaSourceConfiguration
                 BlankPagesPropertyId, SupportsBlankPageValue, 1, 0, true);
         }
 
+        // No WIA binding exists for any key yet. Malformed requests are rejected; the rest are unsupported.
+        foreach (var keyed in KeyedDriverSettings.Read(_options))
+        {
+            if (keyed.Rejection != null)
+            {
+                result.Add(keyed.Name, keyed.RequestedValue, DriverProcessingStatus.Rejected, null, keyed.Rejection);
+            }
+            else
+            {
+                result.AddUnsupported(keyed.Name, keyed.RequestedValue, KeyedDriverSettings.UnboundMessage("WIA"));
+            }
+        }
+
         return result.Build();
     }
 
@@ -206,6 +219,11 @@ internal sealed class WiaSourceConfiguration
             yield return (nameof(DriverProcessingOptions.AutomaticColorDetection), color);
         if (_options.AutomaticBlankPageDetection is { } blank)
             yield return (nameof(DriverProcessingOptions.AutomaticBlankPageDetection), blank);
+        foreach (var keyed in KeyedDriverSettings.Read(_options))
+        {
+            if (keyed.Rejection == null && keyed.RequestedValue != null)
+                yield return (keyed.Name, keyed.RequestedValue);
+        }
     }
 
     private PropertyObservation Observe(int propertyId, params string[] names)
@@ -883,7 +901,11 @@ internal sealed class WiaSourceConfiguration
         public void Add(string name, object? requested, DriverProcessingStatus status, object? effective,
             string? message = null)
         {
-            _requested[name] = requested;
+            // A repeated keyed request is reported as rejected under the same name; keep the value that is used.
+            if (!_requested.ContainsKey(name))
+            {
+                _requested[name] = requested;
+            }
             if (effective != null)
             {
                 _effective[name] = effective;

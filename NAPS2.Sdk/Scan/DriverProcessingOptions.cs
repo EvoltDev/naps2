@@ -69,6 +69,12 @@ public sealed class DriverProcessingOptions
     public bool? AutomaticBlankPageDetection { get; set; }
 
     /// <summary>
+    /// Requests for driver settings beyond the typed operations above, identified by backend-neutral keys. A key
+    /// without a binding for the selected backend is reported as unsupported in the processing result.
+    /// </summary>
+    public List<DriverSettingRequest> Settings { get; set; } = [];
+
+    /// <summary>
     /// Gets whether at least one driver-side operation was requested.
     /// </summary>
     [XmlIgnore]
@@ -82,7 +88,8 @@ public sealed class DriverProcessingOptions
                                AutomaticBorderDetection.HasValue ||
                                AutomaticCrop.HasValue ||
                                AutomaticColorDetection.HasValue ||
-                               AutomaticBlankPageDetection.HasValue;
+                               AutomaticBlankPageDetection.HasValue ||
+                               Settings is { Count: > 0 };
 
     /// <summary>
     /// Compatibility alias for callers that use the existing ScanOptions spelling.
