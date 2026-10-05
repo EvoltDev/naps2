@@ -176,8 +176,9 @@ internal static class KodakTwainBindings
             new(ColorBalance(DriverSettingKeys.ColorBalanceGreen, ICapColorBalanceGreen, "ICAP_COLORBALANCEGREEN",
                 181)),
             new(ColorBalance(DriverSettingKeys.ColorBalanceBlue, ICapColorBalanceBlue, "ICAP_COLORBALANCEBLUE", 182)),
+            // Documented as TWTY_UINT32; the i4250 with driver 16.4 reports TWTY_INT32 with the same 0-3 range.
             new(Named(DriverSettingKeys.Sharpening, ICapColorSharpen, "ICAP_COLORSHARPEN", 185, SharpeningLevels,
-                NativeValueType.UInt32)),
+                NativeValueType.UInt32) with { AlternativeTypes = [NativeValueType.Int32] }),
             new(Boolean(DriverSettingKeys.StreakRemoval, ICapStreakRemovalEnabled, "ICAP_STREAKREMOVALENABLED", 190)),
             new(Integer(DriverSettingKeys.StreakRemovalStrength, ICapStreakRemovalAggressiveness,
                 "ICAP_STREAKREMOVALAGGRESSIVENESS", 191, -2, 2,

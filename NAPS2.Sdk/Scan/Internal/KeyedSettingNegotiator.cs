@@ -81,6 +81,13 @@ internal sealed record NativeSettingBinding
     public bool RequireExactType { get; init; }
 
     /// <summary>
+    /// Other item types accepted under <see cref="RequireExactType"/>, when a device has been observed reporting a
+    /// different integer type than the documentation for the same values. The value is written with the type the
+    /// device reports.
+    /// </summary>
+    public IReadOnlyList<NativeValueType> AlternativeTypes { get; init; } = [];
+
+    /// <summary>
     /// Where the binding is documented, for vendor bindings. Reported as the evidence for the setting.
     /// </summary>
     public string? Source { get; init; }
@@ -359,8 +366,10 @@ internal static class KeyedSettingNegotiator
 
     /// <summary>
     /// Picks the first candidate that can represent the value and that the source does not report as unsupported.
-    /// Access and offered values are checked later, after prerequisites are written. When no candidate qualifies,
-    /// the last candidate's outcome is reported.
+    /// When every convertible candidate is currently unsupported, the last one is still selected: many capabilities
+    /// are only exposed once a prerequisite or an earlier setting puts the source in the right mode (a custom preset,
+    /// a fill color), so support is decided by the probe after those writes. Access and offered values are checked
+    /// at the same point.
     /// </summary>
     private static (NativeSettingBinding? Binding, object? Native, DriverProcessingStatus Status, string? Message,
         NativeSettingBinding? LastBinding) Select(IDriverSettingAccess access,
@@ -369,6 +378,7 @@ internal static class KeyedSettingNegotiator
         var status = DriverProcessingStatus.Unsupported;
         string? message = null;
         NativeSettingBinding? last = null;
+        (NativeSettingBinding Binding, object Native)? deferred = null;
         foreach (var binding in bindings)
         {
             last = binding;
@@ -383,13 +393,14 @@ internal static class KeyedSettingNegotiator
             var probe = SafeProbe(access, binding);
             if (probe.State == DriverProcessingCapabilityState.Unsupported)
             {
-                status = DriverProcessingStatus.Unsupported;
-                message = probe.Message ?? "The driver does not support this setting.";
+                deferred = (binding, conversion.Value!);
                 continue;
             }
             return (binding, conversion.Value, default, null, binding);
         }
-        return (null, null, status, message, last);
+        return deferred is { } d
+            ? (d.Binding, d.Native, default, null, d.Binding)
+            : (null, null, status, message, last);
     }
 
     /// <summary>

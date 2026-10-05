@@ -181,6 +181,82 @@ public class KodakTwainBindingsTests
         Assert.Empty(access.Writes);
     }
 
+    [Fact]
+    public void SettingsUnlockedByTheirPrerequisiteAreAppliedNotRejectedUpFront()
+    {
+        // Observed on the i4250: ICAP_AUTOCOLORAMOUNT is not exposed until ICAP_AUTOCOLORCONTENT is custom.
+        var access = new FakeAccess
+        {
+            States = { ["ICAP_AUTOCOLORAMOUNT"] = DriverProcessingCapabilityState.Unsupported }
+        };
+        access.AfterWrite = (name, values) =>
+        {
+            if (name == "ICAP_AUTOCOLORCONTENT" && Equals(values[name], 4))
+            {
+                access.States.Remove("ICAP_AUTOCOLORAMOUNT");
+            }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.AutomaticColorAmount, DriverSettingValue.FromInteger(50)))));
+
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+        Assert.Equal(["ICAP_AUTOCOLORCONTENT", "ICAP_AUTOCOLORAMOUNT"], access.Writes);
+    }
+
+    [Fact]
+    public void SettingsUnlockedByAnEarlierSettingAreAppliedNotRejectedUpFront()
+    {
+        // Observed on the i4250: edge widths are not exposed while edge fill is automatic.
+        var access = new FakeAccess
+        {
+            States =
+            {
+                ["ICAP_IMAGEEDGEFILLALLSIDES"] = DriverProcessingCapabilityState.Unsupported,
+                ["ICAP_IMAGEEDGETOP"] = DriverProcessingCapabilityState.Unsupported
+            }
+        };
+        access.AfterWrite = (name, values) =>
+        {
+            if (name == "ICAP_IMAGEEDGEFILL" && Equals(values[name], 1))
+            {
+                access.States.Clear();
+            }
+        };
+
+        var results = Apply(access, Options(
+            (DriverSettingKeys.EdgeFillWidth, DriverSettingValue.FromReal(0.2)),
+            (DriverSettingKeys.EdgeFill, DriverSettingValue.FromText("white"))));
+
+        Assert.All(results, x => Assert.Equal(DriverProcessingStatus.Applied, x.Status));
+        Assert.Equal(["ICAP_IMAGEEDGEFILL", "ICAP_IMAGEEDGEFILLALLSIDES", "ICAP_IMAGEEDGETOP"], access.Writes);
+    }
+
+    [Fact]
+    public void ASettingThatStaysUnexposedIsReportedUnsupportedWithoutWriting()
+    {
+        var access = new FakeAccess
+        {
+            States = { ["ICAP_BACKGROUNDADJUSTAPPLYTO"] = DriverProcessingCapabilityState.Unsupported }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BackgroundSmoothingTarget, DriverSettingValue.FromText("all")))));
+
+        Assert.Equal(DriverProcessingStatus.Unsupported, result.Status);
+        Assert.Empty(access.Writes);
+    }
+
+    [Fact]
+    public void SharpeningAcceptsTheInt32TypeTheI4250Reports()
+    {
+        var sharpening = KodakTwainBindings.Set.Bindings.Single(x => x.Binding.Key == DriverSettingKeys.Sharpening)
+            .Binding;
+
+        Assert.Equal(NativeValueType.UInt32, sharpening.ValueType);
+        Assert.Equal([NativeValueType.Int32], sharpening.AlternativeTypes);
+    }
+
     private static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(
         DriverDeviceIdentity? identity) =>
         KeyedSettingNegotiator.Candidates(TwainSettingBindings.Bindings, [KodakTwainBindings.Set], identity);

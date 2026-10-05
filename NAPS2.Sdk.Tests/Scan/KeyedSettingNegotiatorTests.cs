@@ -239,7 +239,7 @@ public class KeyedSettingNegotiatorTests
         public Dictionary<string, NativeWriteStatus> WriteResults { get; } = new();
         public HashSet<string> Unreadable { get; } = new();
         public List<string> Writes { get; } = new();
-        public Action<string, Dictionary<string, object>>? AfterWrite { get; init; }
+        public Action<string, Dictionary<string, object>>? AfterWrite { get; set; }
 
         public NativeProbe Probe(NativeSettingBinding binding)
         {

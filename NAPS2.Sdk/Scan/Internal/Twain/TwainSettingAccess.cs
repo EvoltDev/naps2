@@ -15,6 +15,9 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
     private readonly DataSource _source;
     private readonly ILogger? _logger;
 
+    // The item type each probed capability reported, so a binding with alternative types writes in the device's type.
+    private readonly Dictionary<int, ItemType> _observedTypes = new();
+
     public TwainSettingAccess(DataSource source, ILogger? logger = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
@@ -58,7 +61,8 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
 
         // A vendor-defined id is only trusted when the source reports the documented item type; another vendor, or
         // another driver version, may use the same id for something else.
-        if (binding.RequireExactType && read.ItemType != ToItemType(binding.ValueType))
+        if (binding.RequireExactType && read.ItemType != ToItemType(binding.ValueType) &&
+            !binding.AlternativeTypes.Any(x => read.ItemType == ToItemType(x)))
         {
             return new NativeProbe
             {
@@ -68,6 +72,7 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
             };
         }
 
+        _observedTypes[binding.NativeId] = read.ItemType;
         var probe = new NativeProbe
         {
             State = supports == null
@@ -120,7 +125,13 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
     public NativeWriteResult Write(NativeSettingBinding binding, object nativeValue)
     {
         var id = (CapabilityId) binding.NativeId;
-        using var cap = CreateCapability(id, binding.ValueType, nativeValue);
+        var type = binding.ValueType;
+        if (binding.AlternativeTypes.Count > 0 && _observedTypes.TryGetValue(binding.NativeId, out var observed))
+        {
+            type = binding.AlternativeTypes.Append(binding.ValueType).FirstOrDefault(x => ToItemType(x) == observed,
+                binding.ValueType);
+        }
+        using var cap = CreateCapability(id, type, nativeValue);
         var rc = _source.DGControl.Capability.Set(cap);
         if (rc == ReturnCode.Success)
         {
