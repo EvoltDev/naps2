@@ -52,7 +52,7 @@ internal static class TwainCapabilityInventory
         };
     }
 
-    private static DriverDeviceIdentity ReadIdentity(DataSource source)
+    internal static DriverDeviceIdentity ReadIdentity(DataSource source)
     {
         var version = source.Version;
         return new DriverDeviceIdentity

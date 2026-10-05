@@ -43,6 +43,10 @@ internal sealed class WiaSourceConfiguration
     private static readonly DriverProcessingBooleanCaps UnsupportedBoolean =
         new() { State = DriverProcessingCapabilityState.Unsupported };
 
+    // No WIA vendor binding is verified: private WIA properties are documented for none of the supported vendors.
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> StandardCandidates =
+        KeyedSettingNegotiator.Candidates(WiaSettingBindings.Bindings, [], null);
+
     private readonly WiaDevice _device;
     private readonly WiaItemBase _item;
     private readonly DriverProcessingOptions _options;
@@ -84,7 +88,7 @@ internal sealed class WiaSourceConfiguration
             AutomaticColorDetection = GetColorCaps(),
             AutomaticBlankPageDetection = GetBooleanCaps(BlankPagesPropertyId, SupportsBlankPageValue),
             Settings = KeyedSettingNegotiator.QueryCaps(new WiaSettingAccess(_device, _item, _logger),
-                WiaSettingBindings.Bindings, WiaSettingBindings.Gaps)
+                StandardCandidates, WiaSettingBindings.Gaps)
         };
     }
 
@@ -163,7 +167,7 @@ internal sealed class WiaSourceConfiguration
         }
 
         foreach (var setting in KeyedSettingNegotiator.Apply(new WiaSettingAccess(_device, _item, _logger), "WIA",
-                     WiaSettingBindings.Bindings, WiaSettingBindings.Gaps, _options))
+                     StandardCandidates, WiaSettingBindings.Gaps, _options))
         {
             result.Add(setting);
         }

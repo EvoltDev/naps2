@@ -56,6 +56,18 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
             };
         }
 
+        // A vendor-defined id is only trusted when the source reports the documented item type; another vendor, or
+        // another driver version, may use the same id for something else.
+        if (binding.RequireExactType && read.ItemType != ToItemType(binding.ValueType))
+        {
+            return new NativeProbe
+            {
+                State = DriverProcessingCapabilityState.Unsupported,
+                Message = $"{binding.NativeName} reports item type {read.ItemType}, but the binding is documented " +
+                          $"as {ToItemType(binding.ValueType)}."
+            };
+        }
+
         var probe = new NativeProbe
         {
             State = supports == null
@@ -154,7 +166,8 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
                 return new TWCapability(id, new TWArray
                 {
                     ItemType = ItemType.UInt16,
-                    ItemList = ((object[]) value).Select(x => (object) Convert.ToUInt16(x, CultureInfo.InvariantCulture))
+                    ItemList = ((object[]) value)
+                        .Select(x => (object) Convert.ToUInt16(x, CultureInfo.InvariantCulture))
                         .ToArray()
                 });
             default:

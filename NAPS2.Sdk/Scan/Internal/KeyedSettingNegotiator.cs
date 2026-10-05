@@ -28,6 +28,18 @@ internal readonly record struct NativeConversion(object? Value, string? Error)
 }
 
 /// <summary>
+/// A native value that must be written before a binding's own value takes effect, such as selecting a custom preset
+/// before writing its amount.
+/// </summary>
+/// <param name="Binding">The capability or property to write.</param>
+/// <param name="Value">The normalized native value.</param>
+/// <param name="Optional">
+/// Whether the setting may proceed when the driver does not support the prerequisite. A required prerequisite that
+/// cannot be written makes the setting fail.
+/// </param>
+internal sealed record NativePrerequisite(NativeSettingBinding Binding, object Value, bool Optional = false);
+
+/// <summary>
 /// Binds one <see cref="DriverSettingKeys"/> key to a native capability or property.
 /// </summary>
 internal sealed record NativeSettingBinding
@@ -59,6 +71,19 @@ internal sealed record NativeSettingBinding
     /// Converts a native value back to the key's value, or null when it has no translation.
     /// </summary>
     public required Func<object, DriverSettingValue?> FromNative { get; init; }
+
+    public IReadOnlyList<NativePrerequisite> Prerequisites { get; init; } = [];
+
+    /// <summary>
+    /// Requires the driver to report exactly <see cref="ValueType"/> for the capability. Vendor bindings set this:
+    /// a vendor-defined id is only trusted when its type matches the documented contract.
+    /// </summary>
+    public bool RequireExactType { get; init; }
+
+    /// <summary>
+    /// Where the binding is documented, for vendor bindings. Reported as the evidence for the setting.
+    /// </summary>
+    public string? Source { get; init; }
 
     public string Label => string.Format(CultureInfo.InvariantCulture, "{0} {1} (0x{2:X4})", Protocol, NativeName,
         NativeId);
@@ -116,16 +141,27 @@ internal interface IDriverSettingAccess
 }
 
 /// <summary>
-/// Negotiates keyed driver settings through protocol bindings: validates, writes in dependency order, and reads every
-/// written value back once all writes are done, because a later write can change an earlier one.
+/// Negotiates keyed driver settings through protocol bindings: picks the first usable binding for each key, validates
+/// the value against what the driver offers, writes in dependency order, and reads every written value back once all
+/// writes are done, because a later write can change an earlier one.
 /// </summary>
 internal static class KeyedSettingNegotiator
 {
     private const double RealTolerance = 0.001;
 
+    /// <summary>
+    /// Applies the keyed requests in <paramref name="options"/>.
+    /// </summary>
+    /// <param name="access">Native access for the opened source.</param>
+    /// <param name="protocol">The protocol name used in messages.</param>
+    /// <param name="candidates">
+    /// The bindings for each key in preference order: the standard binding first, then matching vendor bindings.
+    /// </param>
+    /// <param name="gaps">Why a key has no binding, for keys without candidates.</param>
+    /// <param name="options">The requests.</param>
     public static IReadOnlyList<DriverProcessingSetting> Apply(IDriverSettingAccess access, string protocol,
-        IReadOnlyDictionary<string, NativeSettingBinding> bindings, IReadOnlyDictionary<string, string> gaps,
-        DriverProcessingOptions? options)
+        IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> candidates,
+        IReadOnlyDictionary<string, string> gaps, DriverProcessingOptions? options)
     {
         var results = new List<DriverProcessingSetting>();
         var pending = new List<(KeyedSettingRequest Request, NativeSettingBinding Binding, object Native)>();
@@ -137,26 +173,34 @@ internal static class KeyedSettingNegotiator
                 results.Add(Result(keyed, DriverProcessingStatus.Rejected, keyed.Rejection));
                 continue;
             }
-            if (!bindings.TryGetValue(keyed.Name, out var binding))
+            if (!candidates.TryGetValue(keyed.Name, out var bindings) || bindings.Count == 0)
             {
                 results.Add(Result(keyed, DriverProcessingStatus.Unsupported,
                     gaps.TryGetValue(keyed.Name, out var gap) ? gap : KeyedDriverSettings.UnboundMessage(protocol)));
                 continue;
             }
 
-            var conversion = Convert(binding, keyed.Request.Value!);
-            if (conversion.Error != null)
+            var selection = Select(access, bindings, keyed.Request.Value!);
+            if (selection.Binding == null)
             {
-                results.Add(Result(keyed, DriverProcessingStatus.Rejected, conversion.Error, binding));
+                results.Add(Result(keyed, selection.Status, selection.Message, selection.LastBinding));
                 continue;
             }
-            pending.Add((keyed, binding, conversion.Value!));
+            pending.Add((keyed, selection.Binding, selection.Native!));
         }
 
         var written = new List<(KeyedSettingRequest Request, NativeSettingBinding Binding, object Native,
             NativeWriteStatus Status)>();
         foreach (var (keyed, binding, native) in pending.OrderBy(x => x.Binding.Order))
         {
+            var prerequisite = WritePrerequisites(access, binding);
+            if (prerequisite != null)
+            {
+                results.Add(Result(keyed, DriverProcessingStatus.Failed, prerequisite, binding));
+                continue;
+            }
+
+            // Probe again now: earlier writes and the prerequisites can change access and the offered values.
             var probe = SafeProbe(access, binding);
             switch (probe.State)
             {
@@ -211,7 +255,7 @@ internal static class KeyedSettingNegotiator
                 continue;
             }
 
-            var effective = binding.FromNative(readBack);
+            var effective = Translate(binding, readBack);
             if (effective != null && expected != null && ValuesEqual(effective, expected))
             {
                 results.Add(Result(keyed, DriverProcessingStatus.Applied, null, binding, effective));
@@ -231,30 +275,43 @@ internal static class KeyedSettingNegotiator
     }
 
     /// <summary>
-    /// Reports support for every key a protocol knows: bound keys are probed on the source, gaps are reported as
-    /// unsupported with their reason.
+    /// Reports support for every key: the first candidate the source supports is probed and translated, keys
+    /// without a usable candidate are unsupported with their reason.
     /// </summary>
     public static ImmutableList<DriverSettingCaps> QueryCaps(IDriverSettingAccess access,
-        IReadOnlyDictionary<string, NativeSettingBinding> bindings, IReadOnlyDictionary<string, string> gaps)
+        IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> candidates,
+        IReadOnlyDictionary<string, string> gaps)
     {
         var caps = ImmutableList.CreateBuilder<DriverSettingCaps>();
-        foreach (var binding in bindings.Values.OrderBy(x => x.Order))
+        foreach (var (key, bindings) in candidates.Where(x => x.Value.Count > 0)
+                     .OrderBy(x => x.Value.Min(b => b.Order)).ThenBy(x => x.Key, StringComparer.Ordinal))
         {
-            var probe = SafeProbe(access, binding);
+            NativeSettingBinding? chosen = null;
+            NativeProbe? probe = null;
+            foreach (var binding in bindings)
+            {
+                chosen = binding;
+                probe = SafeProbe(access, binding);
+                if (probe.State != DriverProcessingCapabilityState.Unsupported)
+                {
+                    break;
+                }
+            }
             caps.Add(new DriverSettingCaps
             {
-                Key = binding.Key,
-                State = probe.State,
-                Binding = binding.Label,
-                Current = Translate(binding, probe.Current),
-                Values = probe.Values?.Select(x => Translate(binding, x)).OfType<DriverSettingValue>()
+                Key = key,
+                State = probe!.State,
+                Binding = chosen!.Label,
+                Current = Translate(chosen, probe.Current),
+                Values = probe.Values?.Select(x => Translate(chosen, x)).OfType<DriverSettingValue>()
                     .Distinct().ToImmutableList(),
-                Minimum = Translate(binding, probe.Minimum),
-                Maximum = Translate(binding, probe.Maximum),
+                Minimum = Translate(chosen, probe.Minimum),
+                Maximum = Translate(chosen, probe.Maximum),
                 Message = probe.Message
             });
         }
-        foreach (var gap in gaps.OrderBy(x => x.Key, StringComparer.Ordinal))
+        foreach (var gap in gaps.Where(x => !candidates.TryGetValue(x.Key, out var b) || b.Count == 0)
+                     .OrderBy(x => x.Key, StringComparer.Ordinal))
         {
             caps.Add(new DriverSettingCaps
             {
@@ -266,6 +323,31 @@ internal static class KeyedSettingNegotiator
         return caps.ToImmutable();
     }
 
+    /// <summary>
+    /// Builds the candidate lists for one source: the standard binding for each key, then the vendor bindings whose
+    /// identity and driver version match.
+    /// </summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(
+        IReadOnlyDictionary<string, NativeSettingBinding> standard, IEnumerable<VendorBindingSet> vendors,
+        DriverDeviceIdentity? identity)
+    {
+        var result = standard.ToDictionary(x => x.Key, x => new List<NativeSettingBinding> { x.Value },
+            StringComparer.Ordinal);
+        foreach (var vendor in vendors)
+        {
+            foreach (var binding in vendor.Applicable(identity))
+            {
+                if (!result.TryGetValue(binding.Key, out var list))
+                {
+                    result[binding.Key] = list = [];
+                }
+                list.Add(binding);
+            }
+        }
+        return result.ToDictionary(x => x.Key, x => (IReadOnlyList<NativeSettingBinding>) x.Value,
+            StringComparer.Ordinal);
+    }
+
     internal static bool ValuesEqual(DriverSettingValue left, DriverSettingValue right)
     {
         if (left.Kind == DriverSettingValueKind.Real || right.Kind == DriverSettingValueKind.Real)
@@ -273,6 +355,71 @@ internal static class KeyedSettingNegotiator
             return TryGetNumber(left, out var l) && TryGetNumber(right, out var r) && Math.Abs(l - r) < RealTolerance;
         }
         return left.Kind == right.Kind && Equals(left.ToObject(), right.ToObject());
+    }
+
+    /// <summary>
+    /// Picks the first candidate that can represent the value and that the source does not report as unsupported.
+    /// Access and offered values are checked later, after prerequisites are written. When no candidate qualifies,
+    /// the last candidate's outcome is reported.
+    /// </summary>
+    private static (NativeSettingBinding? Binding, object? Native, DriverProcessingStatus Status, string? Message,
+        NativeSettingBinding? LastBinding) Select(IDriverSettingAccess access,
+            IReadOnlyList<NativeSettingBinding> bindings, DriverSettingValue value)
+    {
+        var status = DriverProcessingStatus.Unsupported;
+        string? message = null;
+        NativeSettingBinding? last = null;
+        foreach (var binding in bindings)
+        {
+            last = binding;
+            var conversion = Convert(binding, value);
+            if (conversion.Error != null)
+            {
+                status = DriverProcessingStatus.Rejected;
+                message = conversion.Error;
+                continue;
+            }
+
+            var probe = SafeProbe(access, binding);
+            if (probe.State == DriverProcessingCapabilityState.Unsupported)
+            {
+                status = DriverProcessingStatus.Unsupported;
+                message = probe.Message ?? "The driver does not support this setting.";
+                continue;
+            }
+            return (binding, conversion.Value, default, null, binding);
+        }
+        return (null, null, status, message, last);
+    }
+
+    /// <summary>
+    /// Writes a binding's prerequisites. Returns why the setting cannot proceed, or null.
+    /// </summary>
+    private static string? WritePrerequisites(IDriverSettingAccess access, NativeSettingBinding binding)
+    {
+        foreach (var prerequisite in binding.Prerequisites)
+        {
+            var probe = SafeProbe(access, prerequisite.Binding);
+            if (probe.State is DriverProcessingCapabilityState.Unsupported && prerequisite.Optional)
+            {
+                continue;
+            }
+            if (probe.State is not (DriverProcessingCapabilityState.Writable or
+                DriverProcessingCapabilityState.Unknown))
+            {
+                return $"The prerequisite {prerequisite.Binding.NativeName} is {probe.State}.";
+            }
+            var write = SafeWrite(access, prerequisite.Binding, prerequisite.Value);
+            if (write.Status is not (NativeWriteStatus.Accepted or NativeWriteStatus.AcceptedWithChange))
+            {
+                if (write.Status == NativeWriteStatus.Unsupported && prerequisite.Optional)
+                {
+                    continue;
+                }
+                return $"The prerequisite {prerequisite.Binding.NativeName} could not be set: {write.Message}";
+            }
+        }
+        return null;
     }
 
     private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value)
@@ -329,7 +476,7 @@ internal static class KeyedSettingNegotiator
     }
 
     private static string Describe(NativeSettingBinding binding, long native) =>
-        binding.FromNative(native)?.ToString() ?? native.ToString(CultureInfo.InvariantCulture);
+        Translate(binding, native)?.ToString() ?? native.ToString(CultureInfo.InvariantCulture);
 
     private static string Describe(object value) => value is object[] array
         ? string.Join(",", array.Select(x => System.Convert.ToString(x, CultureInfo.InvariantCulture)))
@@ -394,7 +541,8 @@ internal static class KeyedSettingNegotiator
             RequestedValue = keyed.RequestedValue,
             EffectiveValue = effective?.ToObject(),
             Message = message,
-            Binding = binding?.Label
+            Binding = binding?.Label,
+            Evidence = binding?.Source
         };
 
     private static bool TryGetNumber(DriverSettingValue value, out double number)

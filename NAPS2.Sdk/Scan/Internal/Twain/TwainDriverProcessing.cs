@@ -48,7 +48,7 @@ internal static class TwainDriverProcessing
             AutomaticColorDetection = QueryColor(source, logger),
             AutomaticBlankPageDetection = QueryBlankPage(source, logger),
             Settings = KeyedSettingNegotiator.QueryCaps(new TwainSettingAccess(source, logger),
-                TwainSettingBindings.Bindings, TwainSettingBindings.Gaps)
+                Candidates(source), TwainSettingBindings.Gaps)
         };
     }
 
@@ -157,8 +157,16 @@ internal static class TwainDriverProcessing
     }
 
     /// <summary>
-    /// Negotiates keyed setting requests through the standard TWAIN capability bindings, after the typed operations
-    /// above so they see the source's final pixel type and processing state.
+    /// The bindings for each key on this source: the standard capability first, then vendor bindings that match the
+    /// source's reported identity and driver version.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(DataSource source) =>
+        KeyedSettingNegotiator.Candidates(TwainSettingBindings.Bindings, [KodakTwainBindings.Set],
+            TwainCapabilityInventory.ReadIdentity(source));
+
+    /// <summary>
+    /// Negotiates keyed setting requests through the standard and vendor TWAIN capability bindings, after the typed
+    /// operations above so they see the source's final pixel type and processing state.
     /// </summary>
     private static void ApplyKeyedSettings(DataSource source, DriverProcessingOptions options,
         IDictionary<string, object?> requested, IDictionary<string, object?> effective,
@@ -166,7 +174,7 @@ internal static class TwainDriverProcessing
         ICollection<string> failed, ILogger? logger)
     {
         var results = KeyedSettingNegotiator.Apply(new TwainSettingAccess(source, logger), "TWAIN",
-            TwainSettingBindings.Bindings, TwainSettingBindings.Gaps, options);
+            Candidates(source), TwainSettingBindings.Gaps, options);
         foreach (var setting in results)
         {
             if (!requested.ContainsKey(setting.Name))
