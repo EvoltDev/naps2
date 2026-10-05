@@ -36,6 +36,13 @@ internal sealed class WiaSourceConfiguration
     private const int WiaAutoDeskewOn = 0;
     private const int WiaAutoDeskewOff = 1;
 
+    private const string NoStandardProperty =
+        "WIA defines no standard property for this operation, and private properties are never selected by " +
+        "name.";
+
+    private static readonly DriverProcessingBooleanCaps UnsupportedBoolean =
+        new() { State = DriverProcessingCapabilityState.Unsupported };
+
     private readonly WiaDevice _device;
     private readonly WiaItemBase _item;
     private readonly DriverProcessingOptions _options;
@@ -63,25 +70,21 @@ internal sealed class WiaSourceConfiguration
             Brightness = GetNumericCaps(WiaPropertyId.IPS_BRIGHTNESS, RotationValueIdentity),
             Contrast = GetNumericCaps(WiaPropertyId.IPS_CONTRAST, RotationValueIdentity),
             RotationDegrees = GetNumericCaps(RotationPropertyId, ToRotationDegrees),
-            AutomaticOrientation = GetBooleanCaps(
-                FindNamedProperty("AutomaticOrientation", "AutoOrientation", "OrientationDetection", "AutoRotate",
-                    "AutoRotation"),
-                SupportsAnyBooleanValue),
+            // WIA defines no standard property for automatic orientation, brightness or border detection. A
+            // private property is never selected by its name, so these stay unsupported until a verified vendor
+            // binding exists.
+            AutomaticOrientation = UnsupportedBoolean,
             Deskew = GetBooleanCaps(AutoDeskewPropertyId, SupportsAutoDeskewValue,
                 value => value == WiaAutoDeskewOn),
-            AutomaticBrightness = GetBooleanCaps(
-                FindNamedProperty("AutomaticBrightness", "AutoBrightness", "AutomaticExposure", "AutoExposure",
-                    "AutomaticLevel", "AutoLevel", "AutomaticTone", "AutoTone"),
-                SupportsAnyBooleanValue),
+            AutomaticBrightness = UnsupportedBoolean,
             AutomaticPageSize = GetBooleanCaps(PageSizePropertyId, SupportsAutoPageSizeValue,
                 value => value == WiaPageAuto),
-            AutomaticBorderDetection = GetBooleanCaps(
-                FindNamedProperty("AutomaticBorderDetection", "AutoBorderDetection", "BorderDetection",
-                    "AutomaticBorder", "AutoBorder", "DocumentBoundaryDetection", "DocumentBoundary",
-                    "BoundaryDetection", "AutoDetectBounds"), SupportsAnyBooleanValue),
+            AutomaticBorderDetection = UnsupportedBoolean,
             AutomaticCrop = GetBooleanCaps(AutoCropPropertyId, SupportsAutoCropValue),
             AutomaticColorDetection = GetColorCaps(),
-            AutomaticBlankPageDetection = GetBooleanCaps(BlankPagesPropertyId, SupportsBlankPageValue)
+            AutomaticBlankPageDetection = GetBooleanCaps(BlankPagesPropertyId, SupportsBlankPageValue),
+            Settings = KeyedSettingNegotiator.QueryCaps(new WiaSettingAccess(_device, _item, _logger),
+                WiaSettingBindings.Bindings, WiaSettingBindings.Gaps)
         };
     }
 
@@ -112,10 +115,8 @@ internal sealed class WiaSourceConfiguration
 
         if (_options.AutomaticOrientation is { } automaticOrientation)
         {
-            ApplyBoolean(result, nameof(DriverProcessingOptions.AutomaticOrientation), automaticOrientation,
-                FindNamedProperty("AutomaticOrientation", "AutoOrientation", "OrientationDetection", "AutoRotate",
-                    "AutoRotation"),
-                SupportsAnyBooleanValue, 1, 0);
+            result.AddUnsupported(nameof(DriverProcessingOptions.AutomaticOrientation), automaticOrientation,
+                NoStandardProperty);
         }
 
         if (_options.Deskew is { } deskew)
@@ -127,10 +128,8 @@ internal sealed class WiaSourceConfiguration
 
         if (_options.AutomaticBrightness is { } automaticBrightness)
         {
-            ApplyBoolean(result, nameof(DriverProcessingOptions.AutomaticBrightness), automaticBrightness,
-                FindNamedProperty("AutomaticBrightness", "AutoBrightness", "AutomaticExposure", "AutoExposure",
-                    "AutomaticLevel", "AutoLevel", "AutomaticTone", "AutoTone"),
-                SupportsAnyBooleanValue, 1, 0);
+            result.AddUnsupported(nameof(DriverProcessingOptions.AutomaticBrightness), automaticBrightness,
+                NoStandardProperty);
         }
 
         if (_options.AutomaticPageSize is { } automaticPageSize)
@@ -142,10 +141,8 @@ internal sealed class WiaSourceConfiguration
 
         if (_options.AutomaticBorderDetection is { } automaticBorderDetection)
         {
-            ApplyBoolean(result, nameof(DriverProcessingOptions.AutomaticBorderDetection), automaticBorderDetection,
-                FindNamedProperty("AutomaticBorderDetection", "AutoBorderDetection", "BorderDetection",
-                    "AutomaticBorder", "AutoBorder", "DocumentBoundaryDetection", "DocumentBoundary",
-                    "BoundaryDetection", "AutoDetectBounds"), SupportsAnyBooleanValue, 1, 0);
+            result.AddUnsupported(nameof(DriverProcessingOptions.AutomaticBorderDetection), automaticBorderDetection,
+                NoStandardProperty);
         }
 
         if (_options.AutomaticCrop is { } automaticCrop)
@@ -165,17 +162,10 @@ internal sealed class WiaSourceConfiguration
                 BlankPagesPropertyId, SupportsBlankPageValue, 1, 0, true);
         }
 
-        // No WIA binding exists for any key yet. Malformed requests are rejected; the rest are unsupported.
-        foreach (var keyed in KeyedDriverSettings.Read(_options))
+        foreach (var setting in KeyedSettingNegotiator.Apply(new WiaSettingAccess(_device, _item, _logger), "WIA",
+                     WiaSettingBindings.Bindings, WiaSettingBindings.Gaps, _options))
         {
-            if (keyed.Rejection != null)
-            {
-                result.Add(keyed.Name, keyed.RequestedValue, DriverProcessingStatus.Rejected, null, keyed.Rejection);
-            }
-            else
-            {
-                result.AddUnsupported(keyed.Name, keyed.RequestedValue, KeyedDriverSettings.UnboundMessage("WIA"));
-            }
+            result.Add(setting);
         }
 
         return result.Build();
@@ -656,36 +646,6 @@ internal sealed class WiaSourceConfiguration
         }
     }
 
-    private WiaProperty? FindNamedProperty(params string[] names)
-    {
-        try
-        {
-            foreach (var property in _item.Properties)
-            {
-                if (names.Any(name => NamesEqual(property.Name, name)))
-                {
-                    return property;
-                }
-            }
-
-            foreach (var property in _device.Properties)
-            {
-                if (names.Any(name => NamesEqual(property.Name, name)))
-                {
-                    return property;
-                }
-            }
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _propertyCollectionQueryFailed = true;
-            _logger.LogDebug(ex, "Could not enumerate WIA properties while looking for a named property");
-            return null;
-        }
-    }
-
     private static bool NamesEqual(string actual, string expected)
     {
         static string Normalize(string value) => new string(value.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
@@ -694,19 +654,6 @@ internal sealed class WiaSourceConfiguration
 
     private static IEnumerable<int> GetIntValues(WiaPropertyAttributes attributes) =>
         attributes.Values?.OfType<int>() ?? Enumerable.Empty<int>();
-
-    private static bool SupportsAnyBooleanValue(WiaPropertyAttributes attributes)
-    {
-        if (attributes.Flags.HasFlag(WiaPropertyFlags.List))
-        {
-            return GetIntValues(attributes).Any(value => value == 0 || value == 1);
-        }
-        if (attributes.Flags.HasFlag(WiaPropertyFlags.Range))
-        {
-            return SupportsRawValue(attributes, 0) && SupportsRawValue(attributes, 1);
-        }
-        return true;
-    }
 
     private static bool SupportsAutoDeskewValue(WiaPropertyAttributes attributes) =>
         SupportsRawValue(attributes, WiaAutoDeskewOn) && SupportsRawValue(attributes, WiaAutoDeskewOff);
@@ -918,6 +865,25 @@ internal sealed class WiaSourceConfiguration
                 EffectiveValue = effective,
                 Message = message
             });
+            Categorize(name, status);
+        }
+
+        public void Add(DriverProcessingSetting setting)
+        {
+            if (!_requested.ContainsKey(setting.Name))
+            {
+                _requested[setting.Name] = setting.RequestedValue;
+            }
+            if (setting.EffectiveValue != null)
+            {
+                _effective[setting.Name] = setting.EffectiveValue;
+            }
+            _settings.Add(setting);
+            Categorize(setting.Name, setting.Status);
+        }
+
+        private void Categorize(string name, DriverProcessingStatus status)
+        {
             switch (status)
             {
                 case DriverProcessingStatus.Rejected:

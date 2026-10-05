@@ -181,4 +181,39 @@ public sealed class DriverProcessingCaps
     public DriverProcessingColorCaps? AutomaticColorDetection { get; init; }
 
     public DriverProcessingBooleanCaps? AutomaticBlankPageDetection { get; init; }
+
+    /// <summary>
+    /// Support for each <see cref="DriverSettingKeys"/> key on this backend, including keys the protocol has no
+    /// standard binding for (reported as unsupported with the reason).
+    /// </summary>
+    public ImmutableList<DriverSettingCaps>? Settings { get; init; }
+}
+
+/// <summary>
+/// Support for one keyed driver setting, translated back into backend-neutral values.
+/// </summary>
+public sealed record DriverSettingCaps
+{
+    public string Key { get; init; } = "";
+
+    public DriverProcessingCapabilityState State { get; init; }
+
+    /// <summary>
+    /// The native capability or property the key is bound to, or null when the protocol has none.
+    /// </summary>
+    public string? Binding { get; init; }
+
+    public DriverSettingValue? Current { get; init; }
+
+    /// <summary>
+    /// The values the driver offers, translated to the key's values. Native values without a translation are left
+    /// out rather than guessed.
+    /// </summary>
+    public ImmutableList<DriverSettingValue>? Values { get; init; }
+
+    public DriverSettingValue? Minimum { get; init; }
+
+    public DriverSettingValue? Maximum { get; init; }
+
+    public string? Message { get; init; }
 }

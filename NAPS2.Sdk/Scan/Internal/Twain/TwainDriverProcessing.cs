@@ -46,7 +46,9 @@ internal static class TwainDriverProcessing
                 AutomaticBorderDetection),
             AutomaticCrop = QueryBoolean(source.Capabilities.ICapAutomaticCropUsesFrame, logger, AutomaticCrop),
             AutomaticColorDetection = QueryColor(source, logger),
-            AutomaticBlankPageDetection = QueryBlankPage(source, logger)
+            AutomaticBlankPageDetection = QueryBlankPage(source, logger),
+            Settings = KeyedSettingNegotiator.QueryCaps(new TwainSettingAccess(source, logger),
+                TwainSettingBindings.Bindings, TwainSettingBindings.Gaps)
         };
     }
 
@@ -89,7 +91,8 @@ internal static class TwainDriverProcessing
             failed, logger);
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
-        ApplyKeyedSettings(options, requested, settings, rejected, unsupported);
+        ApplyKeyedSettings(source, options, requested, effective, settings, rejected, unsupported, failed,
+            logger);
 
         return new DriverProcessingResult
         {
@@ -154,40 +157,39 @@ internal static class TwainDriverProcessing
     }
 
     /// <summary>
-    /// Reports keyed setting requests. No TWAIN binding exists for any key yet, so every well-formed request is
-    /// reported as unsupported; malformed requests are rejected.
+    /// Negotiates keyed setting requests through the standard TWAIN capability bindings, after the typed operations
+    /// above so they see the source's final pixel type and processing state.
     /// </summary>
-    private static void ApplyKeyedSettings(DriverProcessingOptions options, IDictionary<string, object?> requested,
-        ICollection<DriverProcessingSetting> settings, ICollection<string> rejected, ICollection<string> unsupported)
+    private static void ApplyKeyedSettings(DataSource source, DriverProcessingOptions options,
+        IDictionary<string, object?> requested, IDictionary<string, object?> effective,
+        ICollection<DriverProcessingSetting> settings, ICollection<string> rejected, ICollection<string> unsupported,
+        ICollection<string> failed, ILogger? logger)
     {
-        foreach (var keyed in KeyedDriverSettings.Read(options))
+        var results = KeyedSettingNegotiator.Apply(new TwainSettingAccess(source, logger), "TWAIN",
+            TwainSettingBindings.Bindings, TwainSettingBindings.Gaps, options);
+        foreach (var setting in results)
         {
-            if (!requested.ContainsKey(keyed.Name))
+            if (!requested.ContainsKey(setting.Name))
             {
-                requested[keyed.Name] = keyed.RequestedValue;
+                requested[setting.Name] = setting.RequestedValue;
             }
-
-            if (keyed.Rejection != null)
+            if (setting.EffectiveValue != null)
             {
-                settings.Add(new DriverProcessingSetting
-                {
-                    Name = keyed.Name,
-                    Status = DriverProcessingStatus.Rejected,
-                    RequestedValue = keyed.RequestedValue,
-                    Message = keyed.Rejection
-                });
-                rejected.Add(keyed.Name);
-                continue;
+                effective[setting.Name] = setting.EffectiveValue;
             }
-
-            settings.Add(new DriverProcessingSetting
+            settings.Add(setting);
+            switch (setting.Status)
             {
-                Name = keyed.Name,
-                Status = DriverProcessingStatus.Unsupported,
-                RequestedValue = keyed.RequestedValue,
-                Message = KeyedDriverSettings.UnboundMessage("TWAIN")
-            });
-            unsupported.Add(keyed.Name);
+                case DriverProcessingStatus.Rejected:
+                    rejected.Add(setting.Name);
+                    break;
+                case DriverProcessingStatus.Unsupported:
+                    unsupported.Add(setting.Name);
+                    break;
+                case DriverProcessingStatus.Failed:
+                    failed.Add(setting.Name);
+                    break;
+            }
         }
     }
 
