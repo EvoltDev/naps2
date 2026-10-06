@@ -433,7 +433,8 @@ internal class TwainScanRunner
             source.Capabilities.CapIndicators.SetValue(BoolType.False);
         }
 
-        var processingResult = ApplyImageConfiguration(source, _options, _logger);
+        var unrestored = new List<string>();
+        var processingResult = ApplyImageConfiguration(source, _options, _logger, unrestored);
         if (_rawScanSink != null)
         {
             _rawScanSink.ConfigurationApplied(processingResult);
@@ -443,6 +444,7 @@ internal class TwainScanRunner
             _logger.LogDebug("TWAIN driver processing settings: {Settings}",
                 string.Join(", ", processingResult.Settings.Select(x => $"{x.Name}={x.Status}")));
         }
+        KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
     }
 
     private static ScanOptions CreateScanOptions(RawScanOptions options)
@@ -520,7 +522,7 @@ internal class TwainScanRunner
     /// dry run, so a dry run negotiates exactly what a scan would.
     /// </summary>
     internal static DriverProcessingResult ApplyImageConfiguration(DataSource source, ScanOptions options,
-        ILogger logger)
+        ILogger logger, ICollection<string>? unrestored = null)
     {
         // Paper Source
         switch (options.PaperSource)
@@ -601,7 +603,7 @@ internal class TwainScanRunner
         SetClosest(source.Capabilities.ICapXResolution, options.Dpi);
         SetClosest(source.Capabilities.ICapYResolution, options.Dpi);
 
-        return TwainDriverProcessing.Apply(source, options.TwainOptions.ProcessingOptions, logger);
+        return TwainDriverProcessing.Apply(source, options.TwainOptions.ProcessingOptions, logger, unrestored);
     }
 
     internal static float GetHorizontalOffset(HorizontalAlign align, float pageWidth, Func<TWFix32> getPhysicalWidth)

@@ -520,12 +520,14 @@ internal class WiaScanDriver : IScanDriver
 
             var processing = new WiaSourceConfiguration(device, item, _options.WiaOptions.ProcessingOptions,
                 _options.BitDepth, _logger);
+            var unrestored = new List<string>();
             var result = _options.UseNativeUI
                 ? processing.NeutralizeRequestedSettings("WIA native configuration UI owns the acquisition settings.")
-                : processing.Apply();
+                : processing.Apply(unrestored);
             if (!_options.UseNativeUI)
                 WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
             _sink.ConfigurationApplied(result);
+            KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
         }
 
         private void CopyFileToSink(string path)
@@ -1066,8 +1068,10 @@ internal class WiaScanDriver : IScanDriver
             // Keep the legacy ScanOptions brightness/contrast path intact while allowing the portable driver
             // processing contract to request additional WIA operations. WiaSourceConfiguration checks access flags,
             // applies any required WIA value conversion, and verifies the value through a readback.
+            var unrestored = new List<string>();
             _ = new WiaSourceConfiguration(device, item, _options.WiaOptions.ProcessingOptions, _options.BitDepth,
-                _logger).Apply();
+                _logger).Apply(unrestored);
+            KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
             WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
         }
 

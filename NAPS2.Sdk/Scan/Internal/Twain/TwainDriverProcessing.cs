@@ -53,7 +53,7 @@ internal static class TwainDriverProcessing
     }
 
     public static DriverProcessingResult Apply(DataSource source, DriverProcessingOptions? options,
-        ILogger? logger = null)
+        ILogger? logger = null, ICollection<string>? unrestored = null)
     {
         if (source == null) throw new ArgumentNullException(nameof(source));
         if (options == null || !options.HasRequests)
@@ -92,7 +92,7 @@ internal static class TwainDriverProcessing
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
         ApplyKeyedSettings(source, options, requested, effective, settings, rejected, unsupported, failed,
-            logger);
+            logger, unrestored);
 
         return new DriverProcessingResult
         {
@@ -171,10 +171,10 @@ internal static class TwainDriverProcessing
     private static void ApplyKeyedSettings(DataSource source, DriverProcessingOptions options,
         IDictionary<string, object?> requested, IDictionary<string, object?> effective,
         ICollection<DriverProcessingSetting> settings, ICollection<string> rejected, ICollection<string> unsupported,
-        ICollection<string> failed, ILogger? logger)
+        ICollection<string> failed, ILogger? logger, ICollection<string>? unrestored)
     {
         var results = KeyedSettingNegotiator.Apply(new TwainSettingAccess(source, logger), "TWAIN",
-            Candidates(source), TwainSettingBindings.Gaps, options);
+            Candidates(source), TwainSettingBindings.Gaps, options, unrestored);
         foreach (var setting in results)
         {
             if (!requested.ContainsKey(setting.Name))

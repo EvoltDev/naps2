@@ -1,4 +1,5 @@
 using NAPS2.Scan;
+using NAPS2.Scan.Exceptions;
 using NAPS2.Scan.Internal;
 using NAPS2.Scan.Internal.Twain;
 using Xunit;
@@ -291,6 +292,83 @@ public class KodakTwainBindingsTests
         Assert.Equal(DriverProcessingStatus.Failed, result.Status);
         Assert.Contains("could not be restored", result.Message);
         Assert.Contains("CAP_BLANKPAGEMODE", result.Message);
+    }
+
+    [Fact]
+    public void APrerequisiteThatCannotBePutBackIsReportedSoAcquisitionStops()
+    {
+        var access = new FakeAccess
+        {
+            Unreadable = { "CAP_BLANKPAGEMODE" },
+            WriteResults = { ["CAP_BLANKPAGECONTENT"] = NativeWriteStatus.Rejected }
+        };
+        var unrestored = new List<string>();
+
+        KeyedSettingNegotiator.Apply(access, "TWAIN", Candidates(KodakIdentity), TwainSettingBindings.Gaps,
+            Options((DriverSettingKeys.BlankPageContent, DriverSettingValue.FromInteger(5))), unrestored);
+
+        Assert.Equal(["CAP_BLANKPAGEMODE"], unrestored);
+        var stop = Assert.Throws<DeviceException>(() => KeyedSettingNegotiator.ThrowIfUnrestored(unrestored));
+        Assert.Contains("CAP_BLANKPAGEMODE", stop.Message);
+        KeyedSettingNegotiator.ThrowIfUnrestored(new List<string>());
+    }
+
+    [Fact]
+    public void ASettingReadOnlyUntilItsPrerequisiteIsWrittenIsApplied()
+    {
+        var access = new FakeAccess
+        {
+            States = { ["ICAP_AUTOCOLORAMOUNT"] = DriverProcessingCapabilityState.ReadOnly }
+        };
+        access.AfterWrite = (name, values) =>
+        {
+            if (name == "ICAP_AUTOCOLORCONTENT" && Equals(values[name], 4))
+            {
+                access.States.Remove("ICAP_AUTOCOLORAMOUNT");
+            }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.AutomaticColorAmount, DriverSettingValue.FromInteger(50)))));
+
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+        Assert.Equal(["ICAP_AUTOCOLORCONTENT", "ICAP_AUTOCOLORAMOUNT"], access.Writes);
+    }
+
+    [Fact]
+    public void AValueOfferedOnlyAfterThePrerequisiteIsWrittenIsApplied()
+    {
+        var access = new FakeAccess { Offered = { ["ICAP_AUTOCOLORAMOUNT"] = [0] } };
+        access.AfterWrite = (name, values) =>
+        {
+            if (name == "ICAP_AUTOCOLORCONTENT" && Equals(values[name], 4))
+            {
+                access.Offered["ICAP_AUTOCOLORAMOUNT"] = [0, 50, 100];
+            }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.AutomaticColorAmount, DriverSettingValue.FromInteger(50)))));
+
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+        Assert.Equal(["ICAP_AUTOCOLORCONTENT", "ICAP_AUTOCOLORAMOUNT"], access.Writes);
+    }
+
+    [Fact]
+    public void ASettingThatStaysReadOnlyAfterItsPrerequisiteIsRejectedAndThePrerequisiteIsPutBack()
+    {
+        var access = new FakeAccess
+        {
+            Values = { ["ICAP_AUTOCOLORCONTENT"] = 1 },
+            States = { ["ICAP_AUTOCOLORAMOUNT"] = DriverProcessingCapabilityState.ReadOnly }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.AutomaticColorAmount, DriverSettingValue.FromInteger(50)))));
+
+        Assert.Equal(DriverProcessingStatus.Rejected, result.Status);
+        Assert.Contains("read-only", result.Message);
+        Assert.Equal(1, access.Values["ICAP_AUTOCOLORCONTENT"]);
     }
 
     [Fact]

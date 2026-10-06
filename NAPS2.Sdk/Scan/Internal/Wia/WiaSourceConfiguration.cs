@@ -95,7 +95,10 @@ internal sealed class WiaSourceConfiguration
     /// <summary>
     /// Applies requested settings and returns the values verified from the WIA property collection.
     /// </summary>
-    public DriverProcessingResult Apply()
+    /// <param name="unrestored">
+    /// Receives prerequisites that could not be put back; see <see cref="KeyedSettingNegotiator.Apply"/>.
+    /// </param>
+    public DriverProcessingResult Apply(ICollection<string>? unrestored = null)
     {
         var result = new ResultBuilder();
 
@@ -167,7 +170,7 @@ internal sealed class WiaSourceConfiguration
         }
 
         foreach (var setting in KeyedSettingNegotiator.Apply(new WiaSettingAccess(_device, _item, _logger), "WIA",
-                     StandardCandidates, WiaSettingBindings.Gaps, _options))
+                     StandardCandidates, WiaSettingBindings.Gaps, _options, unrestored))
         {
             result.Add(setting);
         }
