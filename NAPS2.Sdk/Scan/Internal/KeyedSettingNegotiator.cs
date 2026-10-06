@@ -464,7 +464,16 @@ internal static class KeyedSettingNegotiator
                 : $"The driver does not offer {string.Join(", ", missing.Select(x => Describe(binding, x)))}.";
         }
 
-        if (probe.Values is { Count: > 0 } values && binding.ValueType != NativeValueType.Fix32)
+        if (probe.Values is { Count: > 0 } reals && binding.ValueType == NativeValueType.Fix32)
+        {
+            var requested = ToDouble(native);
+            return reals.Any(x => Math.Abs(ToDouble(x) - requested) < RealTolerance)
+                ? null
+                : string.Format(CultureInfo.InvariantCulture, "The driver does not offer {0}.",
+                    binding.FromNative(native)?.ToString() ?? Describe(native));
+        }
+
+        if (probe.Values is { Count: > 0 } values)
         {
             var requested = ToLong(native);
             return values.Any(x => ToLong(x) == requested)

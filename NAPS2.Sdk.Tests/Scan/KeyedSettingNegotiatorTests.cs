@@ -126,6 +126,36 @@ public class KeyedSettingNegotiatorTests
     }
 
     [Fact]
+    public void EnumeratedFix32ValuesTheDriverDoesNotOfferAreRejectedWithoutWriting()
+    {
+        var access = new FakeAccess
+        {
+            Offered = { ["ICAP_GAMMA"] = [1.0, 2.0], ["ICAP_THRESHOLD"] = [64.0, 128.0] }
+        };
+        var options = Options(
+            (DriverSettingKeys.Gamma, DriverSettingValue.FromReal(2.2)),
+            (DriverSettingKeys.Threshold, DriverSettingValue.FromInteger(100)));
+
+        var results = Apply(access, options);
+
+        Assert.All(results, x => Assert.Equal(DriverProcessingStatus.Rejected, x.Status));
+        Assert.Contains("2.2", results[0].Message);
+        Assert.Contains("100", results[1].Message);
+        Assert.Empty(access.Writes);
+    }
+
+    [Fact]
+    public void EnumeratedFix32ValuesAreMatchedWithinTolerance()
+    {
+        var access = new FakeAccess { Offered = { ["ICAP_GAMMA"] = [1.0, 2.2000000476837158] } };
+
+        var result = Assert.Single(Apply(access, Options((DriverSettingKeys.Gamma, DriverSettingValue.FromReal(2.2)))));
+
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+        Assert.Equal(["ICAP_GAMMA"], access.Writes);
+    }
+
+    [Fact]
     public void ListSettingsAreCheckedAgainstTheirSeparateValuesCapability()
     {
         var access = new FakeAccess { Offered = { ["ICAP_BARCODESEARCHPRIORITIES"] = [20, 4] } };
