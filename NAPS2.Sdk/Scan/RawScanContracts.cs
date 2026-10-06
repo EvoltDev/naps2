@@ -233,7 +233,13 @@ public enum DriverProcessingStatus
     Neutralized,
     Unsupported,
     Rejected,
-    Failed
+    Failed,
+
+    /// <summary>
+    /// The driver accepted the setting but reports an effective value that differs from the requested value, for
+    /// example after rounding to a supported step.
+    /// </summary>
+    Adjusted
 }
 
 /// <summary>
@@ -250,6 +256,22 @@ public sealed record DriverProcessingSetting
     public object? EffectiveValue { get; init; }
 
     public string? Message { get; init; }
+
+    /// <summary>
+    /// The native binding used for this setting, such as a TWAIN capability or WIA property, when one was selected.
+    /// </summary>
+    public string? Binding { get; init; }
+
+    /// <summary>
+    /// Where the operation was executed. This stays <see cref="DriverExecutionLocation.Unknown"/> unless the binding
+    /// supplies <see cref="Evidence"/>; acceptance by the driver alone does not establish it.
+    /// </summary>
+    public DriverExecutionLocation ExecutionLocation { get; init; }
+
+    /// <summary>
+    /// The basis for <see cref="ExecutionLocation"/> and for the reported status, when one is available.
+    /// </summary>
+    public string? Evidence { get; init; }
 }
 
 /// <summary>

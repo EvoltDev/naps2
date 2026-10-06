@@ -79,6 +79,13 @@ public class ScanOptions
     public bool ExcludeLocalIPs { get; set; }
 
     /// <summary>
+    /// When getting capabilities, also read every capability the driver reports into
+    /// <see cref="ScanCaps.DriverCapabilityInventory"/>. This queries each capability individually and is off by
+    /// default. Only the TWAIN and WIA drivers produce an inventory.
+    /// </summary>
+    public bool IncludeDriverCapabilityInventory { get; set; }
+
+    /// <summary>
     /// Options for detecting barcodes during the scan.
     /// </summary>
     public BarcodeDetectionOptions BarcodeDetectionOptions { get; set; } = new();

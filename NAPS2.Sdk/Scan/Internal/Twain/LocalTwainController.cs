@@ -120,6 +120,12 @@ internal class LocalTwainController : ITwainController
                 }
                 try
                 {
+                    // Read the inventory before the feeder probe below changes CAP_FEEDERENABLED, so it reflects the
+                    // source as opened.
+                    var inventory = options.IncludeDriverCapabilityInventory
+                        ? TwainCapabilityInventory.Read(ds, _logger)
+                        : null;
+
                     var feederCap = ds.Capabilities.CapFeederEnabled;
 
                     feederCap.SetValue(BoolType.False);
@@ -135,6 +141,7 @@ internal class LocalTwainController : ITwainController
                     return new ScanCaps
                     {
                         DriverProcessingCaps = TwainDriverProcessing.QueryCaps(ds, _logger),
+                        DriverCapabilityInventory = inventory,
                         MetadataCaps = new MetadataCaps
                         {
                             Manufacturer = ds.Manufacturer,

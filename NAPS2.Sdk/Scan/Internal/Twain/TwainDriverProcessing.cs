@@ -89,6 +89,7 @@ internal static class TwainDriverProcessing
             failed, logger);
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
+        ApplyKeyedSettings(options, requested, settings, rejected, unsupported);
 
         return new DriverProcessingResult
         {
@@ -142,7 +143,52 @@ internal static class TwainDriverProcessing
         AddRequested(values, AutomaticCrop, options.AutomaticCrop);
         AddRequested(values, AutomaticColorDetection, options.AutomaticColorDetection);
         AddRequested(values, AutomaticBlankPageDetection, options.AutomaticBlankPageDetection);
+        foreach (var keyed in KeyedDriverSettings.Read(options))
+        {
+            if (keyed.Rejection == null)
+            {
+                values[keyed.Name] = keyed.RequestedValue;
+            }
+        }
         return values;
+    }
+
+    /// <summary>
+    /// Reports keyed setting requests. No TWAIN binding exists for any key yet, so every well-formed request is
+    /// reported as unsupported; malformed requests are rejected.
+    /// </summary>
+    private static void ApplyKeyedSettings(DriverProcessingOptions options, IDictionary<string, object?> requested,
+        ICollection<DriverProcessingSetting> settings, ICollection<string> rejected, ICollection<string> unsupported)
+    {
+        foreach (var keyed in KeyedDriverSettings.Read(options))
+        {
+            if (!requested.ContainsKey(keyed.Name))
+            {
+                requested[keyed.Name] = keyed.RequestedValue;
+            }
+
+            if (keyed.Rejection != null)
+            {
+                settings.Add(new DriverProcessingSetting
+                {
+                    Name = keyed.Name,
+                    Status = DriverProcessingStatus.Rejected,
+                    RequestedValue = keyed.RequestedValue,
+                    Message = keyed.Rejection
+                });
+                rejected.Add(keyed.Name);
+                continue;
+            }
+
+            settings.Add(new DriverProcessingSetting
+            {
+                Name = keyed.Name,
+                Status = DriverProcessingStatus.Unsupported,
+                RequestedValue = keyed.RequestedValue,
+                Message = KeyedDriverSettings.UnboundMessage("TWAIN")
+            });
+            unsupported.Add(keyed.Name);
+        }
     }
 
     private static void AddRequested<T>(IDictionary<string, object?> values, string name, T? value)

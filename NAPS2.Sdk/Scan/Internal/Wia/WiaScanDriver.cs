@@ -75,6 +75,9 @@ internal class WiaScanDriver : IScanDriver
                         : new WiaSourceConfiguration(device, processingItem,
                             options.WiaOptions.ProcessingOptions, options.BitDepth, _scanningContext.Logger)
                             .GetCapabilities(),
+                    DriverCapabilityInventory = options.IncludeDriverCapabilityInventory
+                        ? WiaCapabilityInventory.Read(device, processingItem, _scanningContext.Logger)
+                        : null,
                     MetadataCaps = new MetadataCaps
                     {
                         Manufacturer = device.Properties.GetOrNull(WiaPropertyId.DIP_VEND_DESC)?.Value as string,
