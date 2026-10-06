@@ -52,5 +52,17 @@ public class WiaSettingAccessTests
         Assert.Contains("RPC server unavailable", result.Message);
         Assert.Contains("RPC server unavailable", write.Message);
     }
+
+    [Theory]
+    [InlineData(PaperSource.Auto, true, true, PaperSource.Flatbed)]
+    [InlineData(PaperSource.Auto, false, true, PaperSource.Feeder)]
+    [InlineData(PaperSource.Auto, false, false, PaperSource.Flatbed)]
+    [InlineData(PaperSource.Feeder, true, true, PaperSource.Feeder)]
+    [InlineData(PaperSource.Duplex, true, true, PaperSource.Duplex)]
+    public void TheDryRunResolvesAutoToTheSourceAcquisitionScans(PaperSource requested, bool flatbed, bool feeder,
+        PaperSource expected)
+    {
+        Assert.Equal(expected, WiaScanDriver.ResolvePaperSource(requested, flatbed, feeder));
+    }
 }
 #endif

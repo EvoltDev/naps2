@@ -258,6 +258,135 @@ public class KodakTwainBindingsTests
         Assert.Equal([NativeValueType.Int32], binding.AlternativeTypes);
     }
 
+    [Fact]
+    public void ABlankPageModeSwitchedForAFailedContentThresholdIsPutBack()
+    {
+        var access = new FakeAccess
+        {
+            Values = { ["CAP_BLANKPAGEMODE"] = 0 },
+            WriteResults = { ["CAP_BLANKPAGECONTENT"] = NativeWriteStatus.Rejected }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BlankPageContent, DriverSettingValue.FromInteger(5)))));
+
+        Assert.Equal(DriverProcessingStatus.Rejected, result.Status);
+        Assert.Equal(["CAP_BLANKPAGEMODE", "CAP_BLANKPAGECONTENT", "CAP_BLANKPAGEMODE"], access.Writes);
+        Assert.Equal(0, access.Values["CAP_BLANKPAGEMODE"]);
+    }
+
+    [Fact]
+    public void ABlankPageModeThatCannotBePutBackFailsTheSettingAndSaysSo()
+    {
+        // The previous mode was never readable, so it cannot be restored.
+        var access = new FakeAccess
+        {
+            Unreadable = { "CAP_BLANKPAGEMODE" },
+            WriteResults = { ["CAP_BLANKPAGECONTENT"] = NativeWriteStatus.Rejected }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BlankPageContent, DriverSettingValue.FromInteger(5)))));
+
+        Assert.Equal(DriverProcessingStatus.Failed, result.Status);
+        Assert.Contains("could not be restored", result.Message);
+        Assert.Contains("CAP_BLANKPAGEMODE", result.Message);
+    }
+
+    [Fact]
+    public void APrerequisiteTheDriverAdjustsIsNotSatisfiedAndIsPutBack()
+    {
+        // The driver takes the manual color balance mode but switches to an automatic one (2).
+        var access = new FakeAccess
+        {
+            Values = { ["ICAP_COLORBALANCEMODE"] = 0 },
+            AfterWrite = (name, values) =>
+            {
+                if (name == "ICAP_COLORBALANCEMODE" && Equals(values[name], 1))
+                {
+                    values[name] = 2;
+                }
+            }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.ColorBalanceRed, DriverSettingValue.FromInteger(-100)))));
+
+        Assert.Equal(DriverProcessingStatus.Failed, result.Status);
+        Assert.Contains("reads back", result.Message);
+        Assert.DoesNotContain("ICAP_COLORBALANCERED", access.Writes);
+        Assert.Equal(0, access.Values["ICAP_COLORBALANCEMODE"]);
+    }
+
+    [Fact]
+    public void APrerequisiteThatIsAlreadySetIsNotWrittenOrRestored()
+    {
+        var access = new FakeAccess
+        {
+            Values = { ["CAP_BLANKPAGEMODE"] = 2 },
+            WriteResults = { ["CAP_BLANKPAGECONTENT"] = NativeWriteStatus.Rejected }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BlankPageContent, DriverSettingValue.FromInteger(5)))));
+
+        Assert.Equal(DriverProcessingStatus.Rejected, result.Status);
+        Assert.Equal(["CAP_BLANKPAGECONTENT"], access.Writes);
+    }
+
+    [Fact]
+    public void APrerequisiteValueTheDriverDoesNotOfferStopsTheSettingWithoutWriting()
+    {
+        var access = new FakeAccess { Offered = { ["CAP_BLANKPAGEMODE"] = [0, 1] } };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BlankPageContent, DriverSettingValue.FromInteger(5)))));
+
+        Assert.Equal(DriverProcessingStatus.Failed, result.Status);
+        Assert.Contains("CAP_BLANKPAGEMODE", result.Message);
+        Assert.Empty(access.Writes);
+    }
+
+    [Fact]
+    public void KodakSensitivityIsUsedWhenTheStandardOneIsReadOnlyOrDoesNotOfferTheValue()
+    {
+        var readOnly = new FakeAccess
+        {
+            States = { ["CAP_DOUBLEFEEDDETECTIONSENSITIVITY"] = DriverProcessingCapabilityState.ReadOnly }
+        };
+        var notOffered = new FakeAccess { Offered = { ["CAP_DOUBLEFEEDDETECTIONSENSITIVITY"] = [99] } };
+
+        var readOnlyResult = Assert.Single(Apply(readOnly,
+            Options((DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText("high")))));
+        var notOfferedResult = Assert.Single(Apply(notOffered,
+            Options((DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText("high")))));
+
+        Assert.Equal(["CAP_ULTRASONICSENSITIVITY"], readOnly.Writes);
+        Assert.Equal(DriverProcessingStatus.Applied, readOnlyResult.Status);
+        Assert.Equal(["CAP_ULTRASONICSENSITIVITY"], notOffered.Writes);
+        Assert.Equal(DriverProcessingStatus.Applied, notOfferedResult.Status);
+    }
+
+    [Fact]
+    public void AStandardSettingWithNoUsableAlternativeIsStillRejectedWithItsReason()
+    {
+        var access = new FakeAccess
+        {
+            States =
+            {
+                ["CAP_DOUBLEFEEDDETECTIONSENSITIVITY"] = DriverProcessingCapabilityState.ReadOnly,
+                ["CAP_ULTRASONICSENSITIVITY"] = DriverProcessingCapabilityState.ReadOnly
+            }
+        };
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText("high")))));
+
+        Assert.Equal(DriverProcessingStatus.Rejected, result.Status);
+        Assert.Contains("read-only", result.Message);
+        Assert.Empty(access.Writes);
+    }
+
     private static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(
         DriverDeviceIdentity? identity) =>
         KeyedSettingNegotiator.Candidates(TwainSettingBindings.Bindings, [KodakTwainBindings.Set], identity);

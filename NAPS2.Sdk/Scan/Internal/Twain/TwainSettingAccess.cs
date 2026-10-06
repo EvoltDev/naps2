@@ -126,10 +126,17 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
     {
         var id = (CapabilityId) binding.NativeId;
         var type = binding.ValueType;
-        if (binding.AlternativeTypes.Count > 0 && _observedTypes.TryGetValue(binding.NativeId, out var observed))
+        if (binding.AlternativeTypes.Count > 0 && _observedTypes.TryGetValue(binding.NativeId, out var observed) &&
+            ToItemType(binding.ValueType) != observed)
         {
-            type = binding.AlternativeTypes.Append(binding.ValueType).FirstOrDefault(x => ToItemType(x) == observed,
-                binding.ValueType);
+            foreach (var alternative in binding.AlternativeTypes)
+            {
+                if (ToItemType(alternative) == observed)
+                {
+                    type = alternative;
+                    break;
+                }
+            }
         }
         using var cap = CreateCapability(id, type, nativeValue);
         var rc = _source.DGControl.Capability.Set(cap);

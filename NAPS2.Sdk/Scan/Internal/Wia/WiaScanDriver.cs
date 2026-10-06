@@ -1,4 +1,4 @@
-﻿#if !MACOS
+#if !MACOS
 using System.Collections.Immutable;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -48,6 +48,15 @@ internal class WiaScanDriver : IScanDriver
         });
     }
 
+    /// <summary>
+    /// Resolves <see cref="PaperSource.Auto"/> the way acquisition does: the flatbed when the device has one (or when
+    /// neither support check succeeds), otherwise the feeder. Other sources are returned unchanged.
+    /// </summary>
+    internal static PaperSource ResolvePaperSource(PaperSource source, bool supportsFlatbed, bool supportsFeeder) =>
+        source != PaperSource.Auto ? source
+        : supportsFlatbed || !supportsFeeder ? PaperSource.Flatbed
+        : PaperSource.Feeder;
+
     public Task<ScanCaps> GetCaps(ScanOptions options, CancellationToken cancelToken)
     {
         return Task.Run(() =>
@@ -61,7 +70,9 @@ internal class WiaScanDriver : IScanDriver
                 var feeder = items.FirstOrDefault(x => x.Name() == "Feeder");
                 var flatbedCaps = flatbed != null ? GetItemCaps(device, flatbed, true) : null;
                 var feederCaps = feeder != null ? GetItemCaps(device, feeder, false) : null;
-                var processingItem = options.PaperSource == PaperSource.Flatbed
+                // The same item acquisition scans from, so the dry run negotiates with the source the scan uses.
+                var processingItem = ResolvePaperSource(options.PaperSource, device.SupportsFlatbed(),
+                    device.SupportsFeeder()) == PaperSource.Flatbed
                     ? flatbed
                     : feeder ?? flatbed;
                 // WIA 1.0 exposes a single child named "Scan" rather than separate Flatbed/Feeder items. Keep
@@ -235,12 +246,8 @@ internal class WiaScanDriver : IScanDriver
                 return;
             }
 
-            if (_options.PaperSource == PaperSource.Auto)
-            {
-                _options.PaperSource = device.SupportsFlatbed() || !device.SupportsFeeder()
-                    ? PaperSource.Flatbed
-                    : PaperSource.Feeder;
-            }
+            _options.PaperSource = ResolvePaperSource(_options.PaperSource, device.SupportsFlatbed(),
+                device.SupportsFeeder());
 
             using var item = GetItem(device);
             if (item == null)
@@ -750,13 +757,8 @@ internal class WiaScanDriver : IScanDriver
                 return;
             }
 
-            if (_options.PaperSource == PaperSource.Auto)
-            {
-                // Default to flatbed if supported (or if both support checks fail)
-                _options.PaperSource = device.SupportsFlatbed() || !device.SupportsFeeder()
-                    ? PaperSource.Flatbed
-                    : PaperSource.Feeder;
-            }
+            _options.PaperSource = ResolvePaperSource(_options.PaperSource, device.SupportsFlatbed(),
+                device.SupportsFeeder());
 
             using var item = GetItem(device);
             if (item == null)

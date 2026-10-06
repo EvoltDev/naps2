@@ -200,10 +200,27 @@ internal static class KeyedSettingNegotiator
             NativeWriteStatus Status)>();
         foreach (var (keyed, binding, native) in pending.OrderBy(x => x.Binding.Order))
         {
-            var prerequisite = WritePrerequisites(access, binding);
+            // A prerequisite can be destructive on its own (a Kodak blank page mode discards pages with whatever
+            // threshold the source already holds), so every prerequisite this setting changed is put back when the
+            // setting does not go through. A prerequisite that cannot be put back makes the setting Failed and is
+            // named in the message, so the caller cannot mistake the source's state for its defaults.
+            var changed = new List<ChangedPrerequisite>();
+
+            void Unsuccessful(DriverProcessingStatus status, string? message)
+            {
+                var restore = RestorePrerequisites(access, changed);
+                if (restore != null)
+                {
+                    status = DriverProcessingStatus.Failed;
+                    message = message == null ? restore : $"{message} {restore}";
+                }
+                results.Add(Result(keyed, status, message, binding));
+            }
+
+            var prerequisite = WritePrerequisites(access, binding, changed);
             if (prerequisite != null)
             {
-                results.Add(Result(keyed, DriverProcessingStatus.Failed, prerequisite, binding));
+                Unsuccessful(DriverProcessingStatus.Failed, prerequisite);
                 continue;
             }
 
@@ -212,23 +229,22 @@ internal static class KeyedSettingNegotiator
             switch (probe.State)
             {
                 case DriverProcessingCapabilityState.Unsupported:
-                    results.Add(Result(keyed, DriverProcessingStatus.Unsupported,
-                        probe.Message ?? "The driver does not support this setting.", binding));
+                    Unsuccessful(DriverProcessingStatus.Unsupported,
+                        probe.Message ?? "The driver does not support this setting.");
                     continue;
                 case DriverProcessingCapabilityState.ReadOnly:
-                    results.Add(Result(keyed, DriverProcessingStatus.Rejected,
-                        "The driver reports this setting as read-only.", binding));
+                    Unsuccessful(DriverProcessingStatus.Rejected, "The driver reports this setting as read-only.");
                     continue;
                 case DriverProcessingCapabilityState.QueryFailed:
-                    results.Add(Result(keyed, DriverProcessingStatus.Failed,
-                        probe.Message ?? "The driver could not be queried for this setting.", binding));
+                    Unsuccessful(DriverProcessingStatus.Failed,
+                        probe.Message ?? "The driver could not be queried for this setting.");
                     continue;
             }
 
             var offered = CheckOffered(binding, native, probe);
             if (offered != null)
             {
-                results.Add(Result(keyed, DriverProcessingStatus.Rejected, offered, binding));
+                Unsuccessful(DriverProcessingStatus.Rejected, offered);
                 continue;
             }
 
@@ -240,13 +256,13 @@ internal static class KeyedSettingNegotiator
                     written.Add((keyed, binding, native, write.Status));
                     break;
                 case NativeWriteStatus.Unsupported:
-                    results.Add(Result(keyed, DriverProcessingStatus.Unsupported, write.Message, binding));
+                    Unsuccessful(DriverProcessingStatus.Unsupported, write.Message);
                     break;
                 case NativeWriteStatus.Rejected:
-                    results.Add(Result(keyed, DriverProcessingStatus.Rejected, write.Message, binding));
+                    Unsuccessful(DriverProcessingStatus.Rejected, write.Message);
                     break;
                 default:
-                    results.Add(Result(keyed, DriverProcessingStatus.Failed, write.Message, binding));
+                    Unsuccessful(DriverProcessingStatus.Failed, write.Message);
                     break;
             }
         }
@@ -365,11 +381,12 @@ internal static class KeyedSettingNegotiator
     }
 
     /// <summary>
-    /// Picks the first candidate that can represent the value and that the source does not report as unsupported.
-    /// When every convertible candidate is currently unsupported, the last one is still selected: many capabilities
-    /// are only exposed once a prerequisite or an earlier setting puts the source in the right mode (a custom preset,
-    /// a fill color), so support is decided by the probe after those writes. Access and offered values are checked
-    /// at the same point.
+    /// Picks the first candidate that can represent the value, that the source does not report as unsupported or
+    /// read-only, and that offers the value when it reports what it offers. A standard binding that definitively
+    /// cannot take the value therefore falls through to the vendor binding. When no candidate is usable now but one
+    /// is currently unsupported, the last such one is still selected: many capabilities are only exposed once a
+    /// prerequisite or an earlier setting puts the source in the right mode (a custom preset, a fill color), so
+    /// support is decided by the probe after those writes. Access and offered values are checked again at that point.
     /// </summary>
     private static (NativeSettingBinding? Binding, object? Native, DriverProcessingStatus Status, string? Message,
         NativeSettingBinding? LastBinding) Select(IDriverSettingAccess access,
@@ -379,6 +396,7 @@ internal static class KeyedSettingNegotiator
         string? message = null;
         NativeSettingBinding? last = null;
         (NativeSettingBinding Binding, object Native)? deferred = null;
+        (string Message, NativeSettingBinding Binding)? unusable = null;
         foreach (var binding in bindings)
         {
             last = binding;
@@ -396,20 +414,41 @@ internal static class KeyedSettingNegotiator
                 deferred = (binding, conversion.Value!);
                 continue;
             }
+            if (probe.State == DriverProcessingCapabilityState.ReadOnly)
+            {
+                unusable ??= ("The driver reports this setting as read-only.", binding);
+                continue;
+            }
+            if (CheckOffered(binding, conversion.Value!, probe) is { } notOffered)
+            {
+                unusable ??= (notOffered, binding);
+                continue;
+            }
             return (binding, conversion.Value, default, null, binding);
         }
-        return deferred is { } d
-            ? (d.Binding, d.Native, default, null, d.Binding)
+        if (deferred is { } d)
+        {
+            return (d.Binding, d.Native, default, null, d.Binding);
+        }
+        return unusable is { } u
+            ? (null, null, DriverProcessingStatus.Rejected, u.Message, u.Binding)
             : (null, null, status, message, last);
     }
 
+    private sealed record ChangedPrerequisite(NativeSettingBinding Binding, object? Original);
+
     /// <summary>
-    /// Writes a binding's prerequisites. Returns why the setting cannot proceed, or null.
+    /// Writes a binding's prerequisites and records in <paramref name="changed"/> each one it changed, with the value
+    /// it had before. A prerequisite counts as satisfied only when it reads back the required value: a driver that
+    /// accepts a mode with a change (TWRC_CHECKSTATUS) may have picked a mode in which the dependent setting is
+    /// ignored. Returns why the setting cannot proceed, or null.
     /// </summary>
-    private static string? WritePrerequisites(IDriverSettingAccess access, NativeSettingBinding binding)
+    private static string? WritePrerequisites(IDriverSettingAccess access, NativeSettingBinding binding,
+        List<ChangedPrerequisite> changed)
     {
         foreach (var prerequisite in binding.Prerequisites)
         {
+            var name = prerequisite.Binding.NativeName;
             var probe = SafeProbe(access, prerequisite.Binding);
             if (probe.State is DriverProcessingCapabilityState.Unsupported && prerequisite.Optional)
             {
@@ -418,8 +457,19 @@ internal static class KeyedSettingNegotiator
             if (probe.State is not (DriverProcessingCapabilityState.Writable or
                 DriverProcessingCapabilityState.Unknown))
             {
-                return $"The prerequisite {prerequisite.Binding.NativeName} is {probe.State}.";
+                return $"The prerequisite {name} is {probe.State}.";
             }
+
+            var original = probe.Current ?? SafeRead(access, prerequisite.Binding);
+            if (original != null && SameNative(original, prerequisite.Value))
+            {
+                continue;
+            }
+            if (CheckOffered(prerequisite.Binding, prerequisite.Value, probe) is { } notOffered)
+            {
+                return $"The prerequisite {name} cannot be set: {notOffered}";
+            }
+
             var write = SafeWrite(access, prerequisite.Binding, prerequisite.Value);
             if (write.Status is not (NativeWriteStatus.Accepted or NativeWriteStatus.AcceptedWithChange))
             {
@@ -427,10 +477,63 @@ internal static class KeyedSettingNegotiator
                 {
                     continue;
                 }
-                return $"The prerequisite {prerequisite.Binding.NativeName} could not be set: {write.Message}";
+                return $"The prerequisite {name} could not be set: {write.Message}";
+            }
+            changed.Add(new ChangedPrerequisite(prerequisite.Binding, original));
+
+            var readBack = SafeRead(access, prerequisite.Binding);
+            if (readBack == null)
+            {
+                return $"The prerequisite {name} was accepted, but its value could not be read back.";
+            }
+            if (!SameNative(readBack, prerequisite.Value))
+            {
+                return $"The prerequisite {name} reads back {Describe(readBack)} instead of " +
+                       $"{Describe(prerequisite.Value)}.";
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Puts back, newest first, the prerequisites a setting changed. Returns which could not be put back, or null.
+    /// </summary>
+    private static string? RestorePrerequisites(IDriverSettingAccess access, List<ChangedPrerequisite> changed)
+    {
+        var failures = new List<string>();
+        for (var i = changed.Count - 1; i >= 0; i--)
+        {
+            var (binding, original) = changed[i];
+            if (original == null)
+            {
+                failures.Add($"{binding.NativeName} (its previous value is unknown)");
+                continue;
+            }
+            var write = SafeWrite(access, binding, original);
+            var readBack = write.Status is NativeWriteStatus.Accepted or NativeWriteStatus.AcceptedWithChange
+                ? SafeRead(access, binding)
+                : null;
+            if (readBack == null || !SameNative(readBack, original))
+            {
+                failures.Add($"{binding.NativeName} (still {Describe(readBack ?? "unreadable")})");
+            }
+        }
+        changed.Clear();
+        return failures.Count == 0
+            ? null
+            : $"The prerequisites this setting changed could not be restored: {string.Join(", ", failures)}.";
+    }
+
+    private static bool SameNative(object left, object right)
+    {
+        try
+        {
+            return Math.Abs(ToDouble(left) - ToDouble(right)) < RealTolerance;
+        }
+        catch (Exception)
+        {
+            return Equals(left, right);
+        }
     }
 
     private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value)
