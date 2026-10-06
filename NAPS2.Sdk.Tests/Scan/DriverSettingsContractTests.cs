@@ -127,9 +127,11 @@ public class DriverSettingsContractTests
         };
 
         var configuration = RawWorkerWireMapper.ToConfiguration(original);
+        configuration.Settings[0].Status = 99;
         configuration.Settings[0].ExecutionLocation = 99;
         var copy = Assert.Single(RawWorkerWireMapper.FromConfiguration(configuration).Settings);
 
+        Assert.Equal(DriverProcessingStatus.Unknown, copy.Status);
         Assert.Null(copy.Binding);
         Assert.Null(copy.Evidence);
         Assert.Equal(DriverExecutionLocation.Unknown, copy.ExecutionLocation);
@@ -207,5 +209,84 @@ public class DriverSettingsContractTests
         Assert.Null(unknownAccess.CanGet);
         Assert.Null(unknownAccess.CanSet);
         Assert.Equal(4.0, unknownAccess.Maximum!.RealValue);
+    }
+
+    [Fact]
+    public void BooleanRequestsRoundTripWithFalseKeptDistinctFromAbsent()
+    {
+        var original = new DriverProcessingOptions
+        {
+            Settings =
+            [
+                new DriverSettingRequest { Key = "longDocument", Value = DriverSettingValue.FromBoolean(true) },
+                new DriverSettingRequest { Key = "barcodeDetection", Value = DriverSettingValue.FromBoolean(false) },
+                new DriverSettingRequest { Key = "threshold" }
+            ]
+        };
+
+        var serializer = new XmlSerializer<DriverProcessingOptions>();
+        var copy = serializer.DeserializeFromXDocument(serializer.SerializeToXDocument(original))!;
+
+        Assert.Equal(3, copy.Settings.Count);
+        Assert.Equal(DriverSettingValueKind.Boolean, copy.Settings[0].Value!.Kind);
+        Assert.Equal(true, copy.Settings[0].Value!.ToObject());
+
+        var falseValue = copy.Settings[1].Value!;
+        Assert.Equal(DriverSettingValueKind.Boolean, falseValue.Kind);
+        Assert.True(falseValue.HasValue);
+        Assert.Equal(false, falseValue.ToObject());
+
+        Assert.Null(copy.Settings[2].Value);
+    }
+
+    [Fact]
+    public void CapabilityInventoryQueryFailuresRoundTrip()
+    {
+        var original = new ScanCaps
+        {
+            DriverCapabilityInventory = new DriverCapabilityInventory
+            {
+                Protocol = DriverCapabilityProtocol.Wia,
+                FailureReason = "The item properties could not be enumerated.",
+                Capabilities =
+                [
+                    new DriverCapabilityEntry
+                    {
+                        Id = 0x80AC,
+                        IsCustom = true,
+                        State = DriverProcessingCapabilityState.QueryFailed,
+                        Message = "TWAIN condition code: BadCap"
+                    },
+                    new DriverCapabilityEntry
+                    {
+                        Id = 3088,
+                        Name = "WIA_DPS_DOCUMENT_HANDLING_SELECT",
+                        Scope = DriverCapabilityScope.Device,
+                        State = DriverProcessingCapabilityState.ReadOnly,
+                        Current = DriverSettingValue.FromBoolean(false),
+                        Values = ImmutableList.Create(
+                            DriverSettingValue.FromBoolean(false),
+                            DriverSettingValue.FromBoolean(true))
+                    }
+                ]
+            }
+        };
+
+        var serializer = new XmlSerializer<ScanCaps>();
+        var inventory = serializer.DeserializeFromXDocument(serializer.SerializeToXDocument(original))!
+            .DriverCapabilityInventory!;
+
+        Assert.Equal("The item properties could not be enumerated.", inventory.FailureReason);
+        Assert.Equal(2, inventory.Capabilities!.Count);
+
+        var failed = inventory.Capabilities[0];
+        Assert.Equal(DriverProcessingCapabilityState.QueryFailed, failed.State);
+        Assert.Equal("TWAIN condition code: BadCap", failed.Message);
+        Assert.Null(failed.Current);
+
+        var boolean = inventory.Capabilities[1];
+        Assert.Equal(DriverCapabilityScope.Device, boolean.Scope);
+        Assert.Equal(false, boolean.Current!.ToObject());
+        Assert.Equal([false, true], boolean.Values!.Select(x => (bool) x.ToObject()!));
     }
 }
