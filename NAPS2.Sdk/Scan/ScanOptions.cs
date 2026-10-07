@@ -86,6 +86,15 @@ public class ScanOptions
     public bool IncludeDriverCapabilityInventory { get; set; }
 
     /// <summary>
+    /// When getting capabilities, also apply this scan's configuration to the opened source without acquiring
+    /// anything, and return what the driver accepted in <see cref="ScanCaps.DriverProcessingProbe"/>. TWAIN applies
+    /// the paper source, color mode, page frame, brightness, contrast, resolution and driver processing exactly as a
+    /// scan would; WIA applies the driver processing. No paper is fed. The source is closed afterwards, but a driver
+    /// may keep the last values it was given.
+    /// </summary>
+    public bool ProbeDriverProcessing { get; set; }
+
+    /// <summary>
     /// Options for detecting barcodes during the scan.
     /// </summary>
     public BarcodeDetectionOptions BarcodeDetectionOptions { get; set; } = new();

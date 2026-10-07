@@ -8,7 +8,9 @@ namespace NAPS2.Sdk.Tests.Scan;
 
 public class KeyedSettingNegotiatorTests
 {
-    private static readonly IReadOnlyDictionary<string, NativeSettingBinding> Twain = TwainSettingBindings.Bindings;
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Twain =
+        KeyedSettingNegotiator.Candidates(TwainSettingBindings.Bindings, [], null);
+
     private static readonly IReadOnlyDictionary<string, string> TwainGaps = TwainSettingBindings.Gaps;
 
     [Fact]
@@ -19,7 +21,7 @@ public class KeyedSettingNegotiatorTests
         Assert.NotEmpty(keys);
         foreach (var key in keys)
         {
-            Assert.True(Twain.ContainsKey(key) ^ TwainGaps.ContainsKey(key), $"TWAIN: {key}");
+            Assert.True(TwainSettingBindings.Bindings.ContainsKey(key) ^ TwainGaps.ContainsKey(key), $"TWAIN: {key}");
             Assert.True(WiaSettingBindings.Bindings.ContainsKey(key) ^ WiaSettingBindings.Gaps.ContainsKey(key),
                 $"WIA: {key}");
         }
@@ -175,7 +177,8 @@ public class KeyedSettingNegotiatorTests
 
         Assert.Equal(DriverProcessingStatus.Applied, result.Status);
         Assert.Equal("qr,code128", result.EffectiveValue);
-        Assert.Equal(new object[] { (ushort) 20, (ushort) 4 }, (object[]) access.Values["ICAP_BARCODESEARCHPRIORITIES"]);
+        Assert.Equal(new object[] { (ushort) 20, (ushort) 4 },
+            (object[]) access.Values["ICAP_BARCODESEARCHPRIORITIES"]);
     }
 
     [Theory]
@@ -236,7 +239,8 @@ public class KeyedSettingNegotiatorTests
     {
         var access = new FakeAccess();
 
-        var results = KeyedSettingNegotiator.Apply(access, "WIA", WiaSettingBindings.Bindings, WiaSettingBindings.Gaps,
+        var results = KeyedSettingNegotiator.Apply(access, "WIA",
+            KeyedSettingNegotiator.Candidates(WiaSettingBindings.Bindings, [], null), WiaSettingBindings.Gaps,
             Options(
                 (DriverSettingKeys.LongDocument, DriverSettingValue.FromBoolean(true)),
                 (DriverSettingKeys.MultifeedResponse, DriverSettingValue.FromText("off")),
@@ -251,12 +255,12 @@ public class KeyedSettingNegotiatorTests
     private static List<DriverProcessingSetting> Apply(FakeAccess access, DriverProcessingOptions options) =>
         KeyedSettingNegotiator.Apply(access, "TWAIN", Twain, TwainGaps, options).ToList();
 
-    private static DriverProcessingOptions Options(params (string Key, DriverSettingValue Value)[] settings) => new()
+    internal static DriverProcessingOptions Options(params (string Key, DriverSettingValue Value)[] settings) => new()
     {
         Settings = settings.Select(x => new DriverSettingRequest { Key = x.Key, Value = x.Value }).ToList()
     };
 
-    private sealed class FakeAccess : IDriverSettingAccess
+    internal sealed class FakeAccess : IDriverSettingAccess
     {
         public Dictionary<string, object> Values { get; } = new();
         public Dictionary<string, DriverProcessingCapabilityState> States { get; } = new();
@@ -265,7 +269,7 @@ public class KeyedSettingNegotiatorTests
         public Dictionary<string, NativeWriteStatus> WriteResults { get; } = new();
         public HashSet<string> Unreadable { get; } = new();
         public List<string> Writes { get; } = new();
-        public Action<string, Dictionary<string, object>>? AfterWrite { get; init; }
+        public Action<string, Dictionary<string, object>>? AfterWrite { get; set; }
 
         public NativeProbe Probe(NativeSettingBinding binding)
         {

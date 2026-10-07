@@ -48,12 +48,12 @@ internal static class TwainDriverProcessing
             AutomaticColorDetection = QueryColor(source, logger),
             AutomaticBlankPageDetection = QueryBlankPage(source, logger),
             Settings = KeyedSettingNegotiator.QueryCaps(new TwainSettingAccess(source, logger),
-                TwainSettingBindings.Bindings, TwainSettingBindings.Gaps)
+                Candidates(source), TwainSettingBindings.Gaps)
         };
     }
 
     public static DriverProcessingResult Apply(DataSource source, DriverProcessingOptions? options,
-        ILogger? logger = null)
+        ILogger? logger = null, ICollection<string>? unrestored = null)
     {
         if (source == null) throw new ArgumentNullException(nameof(source));
         if (options == null || !options.HasRequests)
@@ -92,7 +92,7 @@ internal static class TwainDriverProcessing
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
         ApplyKeyedSettings(source, options, requested, effective, settings, rejected, unsupported, failed,
-            logger);
+            logger, unrestored);
 
         return new DriverProcessingResult
         {
@@ -157,16 +157,24 @@ internal static class TwainDriverProcessing
     }
 
     /// <summary>
-    /// Negotiates keyed setting requests through the standard TWAIN capability bindings, after the typed operations
-    /// above so they see the source's final pixel type and processing state.
+    /// The bindings for each key on this source: the standard capability first, then vendor bindings that match the
+    /// source's reported identity and driver version.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates(DataSource source) =>
+        KeyedSettingNegotiator.Candidates(TwainSettingBindings.Bindings, [KodakTwainBindings.Set],
+            TwainCapabilityInventory.ReadIdentity(source));
+
+    /// <summary>
+    /// Negotiates keyed setting requests through the standard and vendor TWAIN capability bindings, after the typed
+    /// operations above so they see the source's final pixel type and processing state.
     /// </summary>
     private static void ApplyKeyedSettings(DataSource source, DriverProcessingOptions options,
         IDictionary<string, object?> requested, IDictionary<string, object?> effective,
         ICollection<DriverProcessingSetting> settings, ICollection<string> rejected, ICollection<string> unsupported,
-        ICollection<string> failed, ILogger? logger)
+        ICollection<string> failed, ILogger? logger, ICollection<string>? unrestored)
     {
         var results = KeyedSettingNegotiator.Apply(new TwainSettingAccess(source, logger), "TWAIN",
-            TwainSettingBindings.Bindings, TwainSettingBindings.Gaps, options);
+            Candidates(source), TwainSettingBindings.Gaps, options, unrestored);
         foreach (var setting in results)
         {
             if (!requested.ContainsKey(setting.Name))

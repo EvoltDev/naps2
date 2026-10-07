@@ -177,12 +177,13 @@ internal static class TwainSettingBindings
     /// <summary>
     /// Keys TWAIN has no standard binding for, with the reason reported to the caller.
     /// </summary>
-    public static IReadOnlyDictionary<string, string> Gaps { get; } = new Dictionary<string, string>
-    {
-        [DriverSettingKeys.BarcodeMaximumCount] =
-            "TWAIN has no standard maximum barcode count; ICAP_BARCODEMAXSEARCHPRIORITIES limits the priority " +
-            "list, not the number of results."
-    };
+    public static IReadOnlyDictionary<string, string> Gaps { get; } = KeyedDriverSettings.WithVendorOnlyGaps(
+        new Dictionary<string, string>
+        {
+            [DriverSettingKeys.BarcodeMaximumCount] =
+                "TWAIN has no standard maximum barcode count; ICAP_BARCODEMAXSEARCHPRIORITIES limits the priority " +
+                "list, not the number of results."
+        }, Protocol);
 
     private static NativeSettingBinding Named(string key, int id, string name, int order,
         IReadOnlyDictionary<string, int> names) => new()

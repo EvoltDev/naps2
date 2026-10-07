@@ -82,6 +82,48 @@ internal static class KeyedDriverSettings
     }
 
     /// <summary>
+    /// Keys that no standard TWAIN capability or WIA property covers; only a verified vendor binding can provide them.
+    /// </summary>
+    public static readonly IReadOnlyList<string> VendorOnlyKeys =
+    [
+        DriverSettingKeys.DocumentType,
+        DriverSettingKeys.MediaType,
+        DriverSettingKeys.CroppingMode,
+        DriverSettingKeys.AutomaticColorSensitivity,
+        DriverSettingKeys.AutomaticColorAmount,
+        DriverSettingKeys.AutomaticColorThreshold,
+        DriverSettingKeys.BackgroundSmoothing,
+        DriverSettingKeys.BackgroundSmoothingTarget,
+        DriverSettingKeys.BackgroundSmoothingStrength,
+        DriverSettingKeys.ColorBalanceRed,
+        DriverSettingKeys.ColorBalanceGreen,
+        DriverSettingKeys.ColorBalanceBlue,
+        DriverSettingKeys.Sharpening,
+        DriverSettingKeys.StreakRemoval,
+        DriverSettingKeys.StreakRemovalStrength,
+        DriverSettingKeys.EdgeFill,
+        DriverSettingKeys.EdgeFillWidth,
+        DriverSettingKeys.BlankPageContent,
+        DriverSettingKeys.FeedTimeout,
+        DriverSettingKeys.FeedTimeoutResponse,
+        DriverSettingKeys.SameSettingsBothSides
+    ];
+
+    /// <summary>
+    /// Adds the vendor-only keys to a protocol's gaps with a common reason.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> WithVendorOnlyGaps(Dictionary<string, string> gaps,
+        string protocol)
+    {
+        foreach (var key in VendorOnlyKeys)
+        {
+            gaps.Add(key, $"No standard {protocol} binding exists; this setting needs a verified vendor binding for " +
+                          "the connected device.");
+        }
+        return gaps;
+    }
+
+    /// <summary>
     /// The message for a well-formed key the backend has no binding for.
     /// </summary>
     public static string UnboundMessage(string backend) =>

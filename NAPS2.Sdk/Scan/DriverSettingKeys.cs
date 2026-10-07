@@ -63,7 +63,10 @@ public static class DriverSettingKeys
     /// </summary>
     public const string MultifeedMethod = "multifeedMethod";
 
-    /// <summary>Text: "low", "medium", "high". TWAIN CAP_DOUBLEFEEDDETECTIONSENSITIVITY.</summary>
+    /// <summary>
+    /// Text: "low", "medium", "high", or "off" (vendor only). TWAIN CAP_DOUBLEFEEDDETECTIONSENSITIVITY, or a verified
+    /// vendor ultrasonic sensitivity when the standard capability is unsupported.
+    /// </summary>
     public const string MultifeedSensitivity = "multifeedSensitivity";
 
     /// <summary>
@@ -74,4 +77,76 @@ public static class DriverSettingKeys
 
     /// <summary>Text: "normal", "fragile", "thick", "trifold", "photograph". TWAIN CAP_PAPERHANDLING.</summary>
     public const string PaperHandling = "paperHandling";
+
+    // The keys below have no standard TWAIN or WIA binding. They are available only through verified vendor
+    // bindings for a matching device.
+
+    /// <summary>Text: "photo", "textWithGraphics", "textWithPhoto", "text".</summary>
+    public const string DocumentType = "documentType";
+
+    /// <summary>Text: "cardstock", "glossy", "magazine", "plain", "thin".</summary>
+    public const string MediaType = "mediaType";
+
+    /// <summary>
+    /// Text: "automaticBorder", "transport", "document", "aggressive". Modes producing several images per side are
+    /// not offered.
+    /// </summary>
+    public const string CroppingMode = "croppingMode";
+
+    /// <summary>Text: "off", "low", "medium", "high", "custom". Custom enables the amount and threshold.</summary>
+    public const string AutomaticColorSensitivity = "automaticColorSensitivity";
+
+    /// <summary>Integer 1 to 200; the amount of color needed to keep a page in color. Not a percentage.</summary>
+    public const string AutomaticColorAmount = "automaticColorAmount";
+
+    /// <summary>Integer 0 to 100; how intense a color must be to count towards the amount.</summary>
+    public const string AutomaticColorThreshold = "automaticColorThreshold";
+
+    /// <summary>Text: "none", "automatic", "changeToWhite", "automaticBasic".</summary>
+    public const string BackgroundSmoothing = "backgroundSmoothing";
+
+    /// <summary>Text: "all", "neutral", "predominant".</summary>
+    public const string BackgroundSmoothingTarget = "backgroundSmoothingTarget";
+
+    /// <summary>Integer -10 to 10.</summary>
+    public const string BackgroundSmoothingStrength = "backgroundSmoothingStrength";
+
+    /// <summary>Integer -1000 to 1000, manual color balance.</summary>
+    public const string ColorBalanceRed = "colorBalanceRed";
+
+    /// <summary>Integer -1000 to 1000, manual color balance.</summary>
+    public const string ColorBalanceGreen = "colorBalanceGreen";
+
+    /// <summary>Integer -1000 to 1000, manual color balance.</summary>
+    public const string ColorBalanceBlue = "colorBalanceBlue";
+
+    /// <summary>Text: "none", "normal", "more", "high".</summary>
+    public const string Sharpening = "sharpening";
+
+    /// <summary>Boolean.</summary>
+    public const string StreakRemoval = "streakRemoval";
+
+    /// <summary>Integer -2 to 2; enables streak removal.</summary>
+    public const string StreakRemovalStrength = "streakRemovalStrength";
+
+    /// <summary>Text: "none", "white", "black", "automatic", "automaticWithTears".</summary>
+    public const string EdgeFill = "edgeFill";
+
+    /// <summary>Real, inches, applied to all four edges.</summary>
+    public const string EdgeFillWidth = "edgeFillWidth";
+
+    /// <summary>
+    /// Integer 0 to 100: a page with at most this percentage of content is discarded by the driver. Not
+    /// interchangeable with EVOSCAN's blank page coverage.
+    /// </summary>
+    public const string BlankPageContent = "blankPageContent";
+
+    /// <summary>Integer, seconds to wait for paper before the feed times out; 0 disables the timeout.</summary>
+    public const string FeedTimeout = "feedTimeout";
+
+    /// <summary>Text: "stopFeeder", "endOfJob".</summary>
+    public const string FeedTimeoutResponse = "feedTimeoutResponse";
+
+    /// <summary>Boolean; true applies the front settings to the rear.</summary>
+    public const string SameSettingsBothSides = "sameSettingsBothSides";
 }

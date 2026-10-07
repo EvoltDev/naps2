@@ -20,12 +20,15 @@ public class WiaSettingAccessTests
         ]
     };
 
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<NativeSettingBinding>> Candidates =
+        KeyedSettingNegotiator.Candidates(WiaSettingBindings.Bindings, [], null);
+
     [Fact]
     public void AnAbsentPropertyIsUnsupported()
     {
         var access = new WiaSettingAccess(_ => null);
 
-        var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "WIA", WiaSettingBindings.Bindings,
+        var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "WIA", Candidates,
             WiaSettingBindings.Gaps, LongDocument));
 
         Assert.Equal(DriverProcessingStatus.Unsupported, result.Status);
@@ -37,9 +40,9 @@ public class WiaSettingAccessTests
         var access = new WiaSettingAccess(_ => throw new InvalidOperationException("RPC server unavailable"));
         var binding = WiaSettingBindings.Bindings[DriverSettingKeys.LongDocument];
 
-        var probe = KeyedSettingNegotiator.QueryCaps(access, WiaSettingBindings.Bindings, WiaSettingBindings.Gaps)
+        var probe = KeyedSettingNegotiator.QueryCaps(access, Candidates, WiaSettingBindings.Gaps)
             .Single(x => x.Key == DriverSettingKeys.LongDocument);
-        var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "WIA", WiaSettingBindings.Bindings,
+        var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "WIA", Candidates,
             WiaSettingBindings.Gaps, LongDocument));
         var write = Assert.Throws<InvalidOperationException>(() => access.Write(binding, 1));
 
@@ -48,6 +51,18 @@ public class WiaSettingAccessTests
         Assert.Equal(DriverProcessingStatus.Failed, result.Status);
         Assert.Contains("RPC server unavailable", result.Message);
         Assert.Contains("RPC server unavailable", write.Message);
+    }
+
+    [Theory]
+    [InlineData(PaperSource.Auto, true, true, PaperSource.Flatbed)]
+    [InlineData(PaperSource.Auto, false, true, PaperSource.Feeder)]
+    [InlineData(PaperSource.Auto, false, false, PaperSource.Flatbed)]
+    [InlineData(PaperSource.Feeder, true, true, PaperSource.Feeder)]
+    [InlineData(PaperSource.Duplex, true, true, PaperSource.Duplex)]
+    public void TheDryRunResolvesAutoToTheSourceAcquisitionScans(PaperSource requested, bool flatbed, bool feeder,
+        PaperSource expected)
+    {
+        Assert.Equal(expected, WiaScanDriver.ResolvePaperSource(requested, flatbed, feeder));
     }
 }
 #endif

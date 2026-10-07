@@ -15,6 +15,9 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
     private readonly DataSource _source;
     private readonly ILogger? _logger;
 
+    // The item type each probed capability reported, so a binding with alternative types writes in the device's type.
+    private readonly Dictionary<int, ItemType> _observedTypes = new();
+
     public TwainSettingAccess(DataSource source, ILogger? logger = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
@@ -56,6 +59,20 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
             };
         }
 
+        // A vendor-defined id is only trusted when the source reports the documented item type; another vendor, or
+        // another driver version, may use the same id for something else.
+        if (binding.RequireExactType && read.ItemType != ToItemType(binding.ValueType) &&
+            !binding.AlternativeTypes.Any(x => read.ItemType == ToItemType(x)))
+        {
+            return new NativeProbe
+            {
+                State = DriverProcessingCapabilityState.Unsupported,
+                Message = $"{binding.NativeName} reports item type {read.ItemType}, but the binding is documented " +
+                          $"as {ToItemType(binding.ValueType)}."
+            };
+        }
+
+        _observedTypes[binding.NativeId] = read.ItemType;
         var probe = new NativeProbe
         {
             State = supports == null
@@ -108,7 +125,20 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
     public NativeWriteResult Write(NativeSettingBinding binding, object nativeValue)
     {
         var id = (CapabilityId) binding.NativeId;
-        using var cap = CreateCapability(id, binding.ValueType, nativeValue);
+        var type = binding.ValueType;
+        if (binding.AlternativeTypes.Count > 0 && _observedTypes.TryGetValue(binding.NativeId, out var observed) &&
+            ToItemType(binding.ValueType) != observed)
+        {
+            foreach (var alternative in binding.AlternativeTypes)
+            {
+                if (ToItemType(alternative) == observed)
+                {
+                    type = alternative;
+                    break;
+                }
+            }
+        }
+        using var cap = CreateCapability(id, type, nativeValue);
         var rc = _source.DGControl.Capability.Set(cap);
         if (rc == ReturnCode.Success)
         {
@@ -154,7 +184,8 @@ internal sealed class TwainSettingAccess : IDriverSettingAccess
                 return new TWCapability(id, new TWArray
                 {
                     ItemType = ItemType.UInt16,
-                    ItemList = ((object[]) value).Select(x => (object) Convert.ToUInt16(x, CultureInfo.InvariantCulture))
+                    ItemList = ((object[]) value)
+                        .Select(x => (object) Convert.ToUInt16(x, CultureInfo.InvariantCulture))
                         .ToArray()
                 });
             default:

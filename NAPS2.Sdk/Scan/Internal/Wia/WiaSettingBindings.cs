@@ -81,7 +81,8 @@ internal static class WiaSettingBindings
     /// <summary>
     /// Keys WIA has no standard binding for, with the reason reported to the caller.
     /// </summary>
-    public static IReadOnlyDictionary<string, string> Gaps { get; } = new Dictionary<string, string>
+    public static IReadOnlyDictionary<string, string> Gaps { get; } = KeyedDriverSettings.WithVendorOnlyGaps(
+        new Dictionary<string, string>
     {
         [DriverSettingKeys.Gamma] = "WIA's reserved gamma properties are not a usable standard binding.",
         [DriverSettingKeys.BlackAndWhiteMethod] =
@@ -93,7 +94,7 @@ internal static class WiaSettingBindings
         [DriverSettingKeys.MultifeedSensitivity] =
             "WIA_IPS_MULTI_FEED_SENSITIVITY is a numeric scale with no defined low, medium or high values.",
         [DriverSettingKeys.PaperHandling] = "WIA defines no standard paper handling property."
-    };
+    }, Protocol);
 
     private static NativeSettingBinding Named(string key, int id, string name, int order,
         IReadOnlyDictionary<string, int> names) => new()

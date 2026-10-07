@@ -433,86 +433,8 @@ internal class TwainScanRunner
             source.Capabilities.CapIndicators.SetValue(BoolType.False);
         }
 
-        // Paper Source
-        switch (_options.PaperSource)
-        {
-            case PaperSource.Auto: // Assume the data source will ignore if unsupported
-            case PaperSource.Flatbed:
-                source.Capabilities.CapFeederEnabled.SetValue(BoolType.False);
-                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.False);
-                break;
-            case PaperSource.Feeder:
-                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
-                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.False);
-                break;
-            case PaperSource.Duplex:
-                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
-                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.True);
-                break;
-        }
-
-        // TODO: Should we add an "Automatic" option in the NAPS2 GUI instead of making "Glass" = Auto?
-        // For "Auto", choose the feeder if it has paper, otherwise the flatbed.
-        if (_options.PaperSource == PaperSource.Auto)
-        {
-            if (source.Capabilities.CapAutomaticSenseMedium.IsSupported)
-            {
-                source.Capabilities.CapAutomaticSenseMedium.SetValue(BoolType.True);
-            }
-            else if (source.Capabilities.CapFeederLoaded.IsSupported &&
-                     source.Capabilities.CapFeederLoaded.GetCurrent() == BoolType.True)
-            {
-                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
-            }
-        }
-
-        // Bit Depth
-        switch (_options.BitDepth)
-        {
-            case BitDepth.Color:
-                source.Capabilities.ICapPixelType.SetValue(PixelType.RGB);
-                source.Capabilities.ICapBitDepth.SetValue(24);
-                break;
-            case BitDepth.Grayscale:
-                source.Capabilities.ICapPixelType.SetValue(PixelType.Gray);
-                source.Capabilities.ICapBitDepth.SetValue(8);
-                break;
-            case BitDepth.BlackAndWhite:
-                source.Capabilities.ICapPixelType.SetValue(PixelType.BlackWhite);
-                source.Capabilities.ICapBitDepth.SetValue(1);
-                break;
-        }
-
-        // Page Size, Horizontal Align
-        float pageWidth = _options.PageSize!.WidthInThousandthsOfAnInch / 1000.0f;
-        float pageHeight = _options.PageSize.HeightInThousandthsOfAnInch / 1000.0f;
-        source.Capabilities.ICapUnits.SetValue(Unit.Inches);
-        var horizontalOffset = GetHorizontalOffset(_options.PageAlign, pageWidth,
-            () => source.Capabilities.ICapPhysicalWidth.GetCurrent());
-
-        source.DGImage.ImageLayout.Get(out TWImageLayout imageLayout);
-        imageLayout.Frame = new TWFrame
-        {
-            Left = horizontalOffset,
-            Right = horizontalOffset + pageWidth,
-            Top = 0,
-            Bottom = pageHeight
-        };
-        source.DGImage.ImageLayout.Set(imageLayout);
-
-        // Brightness, Contrast
-        // Conveniently, the range of values used in settings (-1000 to +1000) is the same range TWAIN supports
-        if (!_options.BrightnessContrastAfterScan)
-        {
-            source.Capabilities.ICapBrightness.SetValue(_options.Brightness);
-            source.Capabilities.ICapContrast.SetValue(_options.Contrast);
-        }
-
-        // Resolution
-        SetClosest(source.Capabilities.ICapXResolution, _options.Dpi);
-        SetClosest(source.Capabilities.ICapYResolution, _options.Dpi);
-
-        var processingResult = TwainDriverProcessing.Apply(source, _options.TwainOptions.ProcessingOptions, _logger);
+        var unrestored = new List<string>();
+        var processingResult = ApplyImageConfiguration(source, _options, _logger, unrestored);
         if (_rawScanSink != null)
         {
             _rawScanSink.ConfigurationApplied(processingResult);
@@ -522,6 +444,7 @@ internal class TwainScanRunner
             _logger.LogDebug("TWAIN driver processing settings: {Settings}",
                 string.Join(", ", processingResult.Settings.Select(x => $"{x.Name}={x.Status}")));
         }
+        KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
     }
 
     private static ScanOptions CreateScanOptions(RawScanOptions options)
@@ -591,6 +514,96 @@ internal class TwainScanRunner
             _logger.LogDebug(ex, "TWAIN transfer mechanism set failed for {TransferMechanism}", transferMechanism);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Applies the image configuration of a scan to an opened source: paper source, color mode, page frame,
+    /// brightness and contrast, resolution, then driver processing. Shared by acquisition and by the capability
+    /// dry run, so a dry run negotiates exactly what a scan would.
+    /// </summary>
+    internal static DriverProcessingResult ApplyImageConfiguration(DataSource source, ScanOptions options,
+        ILogger logger, ICollection<string>? unrestored = null)
+    {
+        // Paper Source
+        switch (options.PaperSource)
+        {
+            case PaperSource.Auto: // Assume the data source will ignore if unsupported
+            case PaperSource.Flatbed:
+                source.Capabilities.CapFeederEnabled.SetValue(BoolType.False);
+                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.False);
+                break;
+            case PaperSource.Feeder:
+                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
+                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.False);
+                break;
+            case PaperSource.Duplex:
+                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
+                source.Capabilities.CapDuplexEnabled.SetValue(BoolType.True);
+                break;
+        }
+
+        // TODO: Should we add an "Automatic" option in the NAPS2 GUI instead of making "Glass" = Auto?
+        // For "Auto", choose the feeder if it has paper, otherwise the flatbed.
+        if (options.PaperSource == PaperSource.Auto)
+        {
+            if (source.Capabilities.CapAutomaticSenseMedium.IsSupported)
+            {
+                source.Capabilities.CapAutomaticSenseMedium.SetValue(BoolType.True);
+            }
+            else if (source.Capabilities.CapFeederLoaded.IsSupported &&
+                     source.Capabilities.CapFeederLoaded.GetCurrent() == BoolType.True)
+            {
+                source.Capabilities.CapFeederEnabled.SetValue(BoolType.True);
+            }
+        }
+
+        // Bit Depth
+        switch (options.BitDepth)
+        {
+            case BitDepth.Color:
+                source.Capabilities.ICapPixelType.SetValue(PixelType.RGB);
+                source.Capabilities.ICapBitDepth.SetValue(24);
+                break;
+            case BitDepth.Grayscale:
+                source.Capabilities.ICapPixelType.SetValue(PixelType.Gray);
+                source.Capabilities.ICapBitDepth.SetValue(8);
+                break;
+            case BitDepth.BlackAndWhite:
+                source.Capabilities.ICapPixelType.SetValue(PixelType.BlackWhite);
+                source.Capabilities.ICapBitDepth.SetValue(1);
+                break;
+        }
+
+        // Page Size, Horizontal Align
+        float pageWidth = options.PageSize!.WidthInThousandthsOfAnInch / 1000.0f;
+        float pageHeight = options.PageSize.HeightInThousandthsOfAnInch / 1000.0f;
+        source.Capabilities.ICapUnits.SetValue(Unit.Inches);
+        var horizontalOffset = GetHorizontalOffset(options.PageAlign, pageWidth,
+            () => source.Capabilities.ICapPhysicalWidth.GetCurrent());
+
+        source.DGImage.ImageLayout.Get(out TWImageLayout imageLayout);
+        imageLayout.Frame = new TWFrame
+        {
+            Left = horizontalOffset,
+            Right = horizontalOffset + pageWidth,
+            Top = 0,
+            Bottom = pageHeight
+        };
+        source.DGImage.ImageLayout.Set(imageLayout);
+
+        // Brightness, Contrast
+        // Conveniently, the range of values used in settings (-1000 to +1000) is the same range TWAIN supports
+        if (!options.BrightnessContrastAfterScan)
+        {
+            source.Capabilities.ICapBrightness.SetValue(options.Brightness);
+            source.Capabilities.ICapContrast.SetValue(options.Contrast);
+        }
+
+        // Resolution
+        SetClosest(source.Capabilities.ICapXResolution, options.Dpi);
+        SetClosest(source.Capabilities.ICapYResolution, options.Dpi);
+
+        return TwainDriverProcessing.Apply(source, options.TwainOptions.ProcessingOptions, logger, unrestored);
     }
 
     internal static float GetHorizontalOffset(HorizontalAlign align, float pageWidth, Func<TWFix32> getPhysicalWidth)

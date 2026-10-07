@@ -1,4 +1,4 @@
-﻿#if !MACOS
+#if !MACOS
 using System.Collections.Immutable;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -48,6 +48,15 @@ internal class WiaScanDriver : IScanDriver
         });
     }
 
+    /// <summary>
+    /// Resolves <see cref="PaperSource.Auto"/> the way acquisition does: the flatbed when the device has one (or when
+    /// neither support check succeeds), otherwise the feeder. Other sources are returned unchanged.
+    /// </summary>
+    internal static PaperSource ResolvePaperSource(PaperSource source, bool supportsFlatbed, bool supportsFeeder) =>
+        source != PaperSource.Auto ? source
+        : supportsFlatbed || !supportsFeeder ? PaperSource.Flatbed
+        : PaperSource.Feeder;
+
     public Task<ScanCaps> GetCaps(ScanOptions options, CancellationToken cancelToken)
     {
         return Task.Run(() =>
@@ -61,7 +70,9 @@ internal class WiaScanDriver : IScanDriver
                 var feeder = items.FirstOrDefault(x => x.Name() == "Feeder");
                 var flatbedCaps = flatbed != null ? GetItemCaps(device, flatbed, true) : null;
                 var feederCaps = feeder != null ? GetItemCaps(device, feeder, false) : null;
-                var processingItem = options.PaperSource == PaperSource.Flatbed
+                // The same item acquisition scans from, so the dry run negotiates with the source the scan uses.
+                var processingItem = ResolvePaperSource(options.PaperSource, device.SupportsFlatbed(),
+                    device.SupportsFeeder()) == PaperSource.Flatbed
                     ? flatbed
                     : feeder ?? flatbed;
                 // WIA 1.0 exposes a single child named "Scan" rather than separate Flatbed/Feeder items. Keep
@@ -77,6 +88,12 @@ internal class WiaScanDriver : IScanDriver
                             .GetCapabilities(),
                     DriverCapabilityInventory = options.IncludeDriverCapabilityInventory
                         ? WiaCapabilityInventory.Read(device, processingItem, _scanningContext.Logger)
+                        : null,
+                    // WIA's dry run covers the driver processing; the base acquisition properties are set when a
+                    // scan starts.
+                    DriverProcessingProbe = options.ProbeDriverProcessing && processingItem != null
+                        ? new WiaSourceConfiguration(device, processingItem, options.WiaOptions.ProcessingOptions,
+                            options.BitDepth, _scanningContext.Logger).Apply()
                         : null,
                     MetadataCaps = new MetadataCaps
                     {
@@ -229,12 +246,8 @@ internal class WiaScanDriver : IScanDriver
                 return;
             }
 
-            if (_options.PaperSource == PaperSource.Auto)
-            {
-                _options.PaperSource = device.SupportsFlatbed() || !device.SupportsFeeder()
-                    ? PaperSource.Flatbed
-                    : PaperSource.Feeder;
-            }
+            _options.PaperSource = ResolvePaperSource(_options.PaperSource, device.SupportsFlatbed(),
+                device.SupportsFeeder());
 
             using var item = GetItem(device);
             if (item == null)
@@ -507,12 +520,14 @@ internal class WiaScanDriver : IScanDriver
 
             var processing = new WiaSourceConfiguration(device, item, _options.WiaOptions.ProcessingOptions,
                 _options.BitDepth, _logger);
+            var unrestored = new List<string>();
             var result = _options.UseNativeUI
                 ? processing.NeutralizeRequestedSettings("WIA native configuration UI owns the acquisition settings.")
-                : processing.Apply();
+                : processing.Apply(unrestored);
             if (!_options.UseNativeUI)
                 WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
             _sink.ConfigurationApplied(result);
+            KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
         }
 
         private void CopyFileToSink(string path)
@@ -744,13 +759,8 @@ internal class WiaScanDriver : IScanDriver
                 return;
             }
 
-            if (_options.PaperSource == PaperSource.Auto)
-            {
-                // Default to flatbed if supported (or if both support checks fail)
-                _options.PaperSource = device.SupportsFlatbed() || !device.SupportsFeeder()
-                    ? PaperSource.Flatbed
-                    : PaperSource.Feeder;
-            }
+            _options.PaperSource = ResolvePaperSource(_options.PaperSource, device.SupportsFlatbed(),
+                device.SupportsFeeder());
 
             using var item = GetItem(device);
             if (item == null)
@@ -1058,8 +1068,10 @@ internal class WiaScanDriver : IScanDriver
             // Keep the legacy ScanOptions brightness/contrast path intact while allowing the portable driver
             // processing contract to request additional WIA operations. WiaSourceConfiguration checks access flags,
             // applies any required WIA value conversion, and verifies the value through a readback.
+            var unrestored = new List<string>();
             _ = new WiaSourceConfiguration(device, item, _options.WiaOptions.ProcessingOptions, _options.BitDepth,
-                _logger).Apply();
+                _logger).Apply(unrestored);
+            KeyedSettingNegotiator.ThrowIfUnrestored(unrestored);
             WiaFeedOrientationConfiguration.Verify(_options.WiaOptions.FeedOrientation, () => ReadFeedOrientation(item));
         }
 
