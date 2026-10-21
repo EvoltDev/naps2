@@ -678,7 +678,17 @@ internal sealed class RawWorkerArtifactWriter : IRawScanArtifactWriter
     public async Task AbortAsync(CancellationToken cancellationToken = default) =>
         await AbortAsync("The raw artifact was aborted.", cancellationToken).ConfigureAwait(false);
 
-    public async Task AbortAsync(string reason, CancellationToken cancellationToken = default)
+    public Task AbortAsync(string reason, CancellationToken cancellationToken = default) =>
+        AbortCoreAsync(reason, false, cancellationToken);
+
+    /// <summary>
+    /// Drops this artifact because the source skipped the transfer, without failing the scan. The client discards
+    /// the artifact and keeps reading the stream.
+    /// </summary>
+    public Task DiscardAsync(string reason, CancellationToken cancellationToken = default) =>
+        AbortCoreAsync(reason, true, cancellationToken);
+
+    private async Task AbortCoreAsync(string reason, bool discardedBySource, CancellationToken cancellationToken)
     {
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -699,7 +709,8 @@ internal sealed class RawWorkerArtifactWriter : IRawScanArtifactWriter
                 ArtifactAbort = new RawScanArtifactAbort
                 {
                     ArtifactId = _artifactId,
-                    Reason = reason ?? ""
+                    Reason = reason ?? "",
+                    DiscardedBySource = discardedBySource
                 }
             });
             await WaitForDeliveryAsync(delivery, cancellationToken).ConfigureAwait(false);

@@ -142,6 +142,37 @@ internal sealed class TwainRawScanSink : IDisposable
     }
 
     /// <summary>
+    /// Drops the current transfer because the source cancelled it (TWRC_CANCEL) and continues with the next one, as
+    /// the TWAIN spec and the in-process image path do. Some sources, e.g. a Kodak with automatic feeder/flatbed
+    /// sensing, announce one more transfer after the last sheet and then cancel it.
+    /// </summary>
+    public void SourceCanceledTransfer()
+    {
+        if (_disposed) return;
+        var writer = _writer;
+        _writer = null;
+        _currentByteLength = 0;
+        if (writer == null) return;
+        try
+        {
+            if (writer is RawWorkerArtifactWriter workerWriter)
+            {
+                // Through the worker an abort fails the whole scan unless it is marked as discarded by the source.
+                workerWriter.DiscardAsync("The scanner cancelled this transfer.", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            else
+            {
+                writer.AbortAsync(CancellationToken.None).GetAwaiter().GetResult();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error discarding a TWAIN raw artifact the source cancelled");
+        }
+    }
+
+    /// <summary>
     /// Ensures that no incomplete artifact is presented as a successful raw scan.
     /// </summary>
     public void CompleteScan()
