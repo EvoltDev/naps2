@@ -83,7 +83,7 @@ public class TwainMemoryTransferPayloadTests : ContextualTests
     {
         var group4 = EncodeGroup4(32, 16, (8, 4), (20, 10));
 
-        var tiff = TwainMemoryTransferPayload.CreateGroup4Tiff(group4, 32, 16, 200, 200);
+        var tiff = WrapGroup4(group4, 32, 16, 200, 200);
         using var image = ImageContext.Load(new MemoryStream(tiff));
 
         Assert.Equal(32, image.Width);
@@ -103,7 +103,7 @@ public class TwainMemoryTransferPayloadTests : ContextualTests
     {
         var group4 = EncodeGroup4(32, 16);
 
-        var tiff = TwainMemoryTransferPayload.CreateGroup4Tiff(group4, 32, 16, 0, 0);
+        var tiff = WrapGroup4(group4, 32, 16, 0, 0);
         using var image = ImageContext.Load(new MemoryStream(tiff));
 
         Assert.Equal(32, image.Width);
@@ -116,7 +116,71 @@ public class TwainMemoryTransferPayloadTests : ContextualTests
     public void CreateGroup4Tiff_RejectsUnknownDimensions(int width, int height)
     {
         Assert.Throws<InvalidOperationException>(() =>
-            TwainMemoryTransferPayload.CreateGroup4Tiff([0xFF], width, height, 200, 200));
+            TwainMemoryTransferPayload.CreateGroup4TiffHeader(1, width, height, 200, 200));
+    }
+
+    [Fact]
+    public void ApplyJfifDensity_ReplacesExistingDensity()
+    {
+        var jpeg = EncodeJpeg(72);
+        Assert.Equal(0xE0, jpeg[3]); // ImageSharp writes a JFIF APP0 segment
+
+        Assert.True(TwainMemoryTransferPayload.TryApplyJfifDensity(jpeg, 200, 300, out var patched));
+        using var image = ImageContext.Load(new MemoryStream(patched));
+
+        Assert.Equal(jpeg.Length, patched.Length);
+        Assert.Equal(200, image.HorizontalResolution, 1);
+        // Checked in the bytes: the ImageSharp backend reports the horizontal resolution for both axes.
+        Assert.Equal(1, patched[13]); // dots per inch
+        Assert.Equal(300, (patched[16] << 8) | patched[17]);
+    }
+
+    [Fact]
+    public void ApplyJfifDensity_InsertsSegmentWhenMissingAndPatchesOnlyTheFirstBuffer()
+    {
+        var withApp0 = EncodeJpeg(72);
+        var app0Length = (withApp0[4] << 8) | withApp0[5];
+        // A JPEG without APP0: SOI followed directly by the next segment.
+        byte[] jpeg = [..withApp0.AsSpan(0, 2), ..withApp0.AsSpan(4 + app0Length)];
+        var firstBuffer = jpeg.AsSpan(0, 64);
+
+        Assert.True(TwainMemoryTransferPayload.TryApplyJfifDensity(firstBuffer, 200, 200, out var patched));
+        byte[] stream = [..patched, ..jpeg.AsSpan(64)];
+        using var image = ImageContext.Load(new MemoryStream(stream));
+
+        Assert.Equal(jpeg.Length + 18, stream.Length);
+        Assert.Equal(16, image.Width);
+        Assert.Equal(200, image.HorizontalResolution, 1);
+        Assert.Equal(200, image.VerticalResolution, 1);
+    }
+
+    [Fact]
+    public void ApplyJfifDensity_LeavesNonJpegDataAndUnknownResolutionAlone()
+    {
+        var jpeg = EncodeJpeg(72);
+
+        Assert.False(TwainMemoryTransferPayload.TryApplyJfifDensity(jpeg, 0, 0, out _));
+        Assert.False(TwainMemoryTransferPayload.TryApplyJfifDensity([0x00, 0x01, 0x02], 200, 200, out _));
+    }
+
+    /// <summary>
+    /// Builds the TIFF the sink produces: the header followed by the Group 4 stream.
+    /// </summary>
+    private static byte[] WrapGroup4(byte[] group4, int width, int height, double xRes, double yRes) =>
+    [
+        ..TwainMemoryTransferPayload.CreateGroup4TiffHeader(group4.Length, width, height, xRes, yRes),
+        ..group4
+    ];
+
+    private static byte[] EncodeJpeg(double dpi)
+    {
+        using var source = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24>(16, 16);
+        source.Metadata.ResolutionUnits = SixLabors.ImageSharp.Metadata.PixelResolutionUnit.PixelsPerInch;
+        source.Metadata.HorizontalResolution = dpi;
+        source.Metadata.VerticalResolution = dpi;
+        using var encoded = new MemoryStream();
+        source.Save(encoded, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder());
+        return encoded.ToArray();
     }
 
     /// <summary>

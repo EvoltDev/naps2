@@ -31,7 +31,7 @@ internal sealed class TwainRawScanSink : IDisposable
     private IRawScanArtifactWriter? _writer;
     private TwainImageData? _pendingImageData;
     private TwainMemoryPayloadKind _payloadKind;
-    private MemoryStream? _group4Data;
+    private FileStream? _group4Spool;
     private long _currentByteLength;
     private int _pageIndex = -1;
     private bool _disposed;
@@ -164,7 +164,16 @@ internal sealed class TwainRawScanSink : IDisposable
         _payloadKind = _options.TwainOptions.TransferMode == TwainTransferMode.Memory && imageInfo != null
             ? TwainMemoryTransferPayload.Classify(imageInfo.Compression)
             : TwainMemoryPayloadKind.Raster;
-        _group4Data = _payloadKind == TwainMemoryPayloadKind.Group4Tiff ? new MemoryStream() : null;
+        ReleaseGroup4Spool();
+        if (_payloadKind == TwainMemoryPayloadKind.Group4Tiff)
+        {
+            // The TIFF header needs the stream length, so the stream is spooled to a temporary file and copied to
+            // the writer in bounded chunks at completion. Memory stays bounded however large the page is, which
+            // matters in the 32-bit worker.
+            _group4Spool = new FileStream(Path.Combine(Path.GetTempPath(), Path.GetRandomFileName()),
+                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, StreamBufferSize,
+                FileOptions.DeleteOnClose);
+        }
         _scanEvents.PageStart();
         _writer = _sink.BeginArtifact(CreateHeader(_pendingImageData));
     }
@@ -186,12 +195,20 @@ internal sealed class TwainRawScanSink : IDisposable
         switch (_payloadKind)
         {
             case TwainMemoryPayloadKind.Jpeg:
-                _writer!.Write(transfer.MemoryData);
-                _currentByteLength = checked(_currentByteLength + transfer.MemoryData.Length);
+            {
+                ReadOnlySpan<byte> data = transfer.MemoryData;
+                // Decoders take the resolution from the JPEG itself, so put the TWAIN resolution there.
+                if (_currentByteLength == 0 && TwainMemoryTransferPayload.TryApplyJfifDensity(data,
+                        _pendingImageData?.XRes ?? 0, _pendingImageData?.YRes ?? 0, out var patched))
+                {
+                    data = patched;
+                }
+                _writer!.Write(data);
+                _currentByteLength = checked(_currentByteLength + data.Length);
                 return;
+            }
             case TwainMemoryPayloadKind.Group4Tiff:
-                // The TIFF header needs the stream length, so the strip is written once the transfer is complete.
-                _group4Data!.Write(transfer.MemoryData, 0, transfer.MemoryData.Length);
+                _group4Spool!.Write(transfer.MemoryData, 0, transfer.MemoryData.Length);
                 return;
         }
 
@@ -250,11 +267,16 @@ internal sealed class TwainRawScanSink : IDisposable
             {
                 // The final image info is authoritative; sources that scan to an unknown length report -1 up front.
                 var imageData = ToImageData(transfer.ImageInfo) ?? _pendingImageData;
-                var tiff = TwainMemoryTransferPayload.CreateGroup4Tiff(_group4Data!.ToArray(),
-                    imageData?.Width ?? 0, imageData?.Height ?? 0, imageData?.XRes ?? 0, imageData?.YRes ?? 0);
-                _group4Data = null;
-                _writer!.Write(tiff);
-                _currentByteLength = tiff.Length;
+                using (var spool = _group4Spool!)
+                {
+                    _group4Spool = null;
+                    var header = TwainMemoryTransferPayload.CreateGroup4TiffHeader(spool.Length,
+                        imageData?.Width ?? 0, imageData?.Height ?? 0, imageData?.XRes ?? 0, imageData?.YRes ?? 0);
+                    _writer!.Write(header);
+                    _currentByteLength = header.Length;
+                    spool.Position = 0;
+                    CopyStream(spool);
+                }
                 CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.EncodedImage, ImageFileFormat.Tiff);
                 return;
             }
@@ -303,11 +325,18 @@ internal sealed class TwainRawScanSink : IDisposable
         }
     }
 
+    private void ReleaseGroup4Spool()
+    {
+        // Disposing deletes the temporary file (FileOptions.DeleteOnClose).
+        _group4Spool?.Dispose();
+        _group4Spool = null;
+    }
+
     private void AbortCurrent()
     {
         var writer = _writer;
         _writer = null;
-        _group4Data = null;
+        ReleaseGroup4Spool();
         _currentByteLength = 0;
         if (writer == null) return;
         try
