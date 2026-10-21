@@ -22,6 +22,8 @@ namespace NAPS2.Scan.Internal.Twain;
 internal sealed class TwainRawScanSink : IDisposable
 {
     private const int StreamBufferSize = 128 * 1024;
+    // JPEG application segments are at most 64 KiB each; past this the resolution is left as the scanner wrote it.
+    private const int JpegHeadLimit = 1024 * 1024;
     private const string TransferCompletePropertyName = "IsTransferComplete";
 
     private readonly RawScanOptions _options;
@@ -30,6 +32,9 @@ internal sealed class TwainRawScanSink : IDisposable
     private readonly ILogger _logger;
     private IRawScanArtifactWriter? _writer;
     private TwainImageData? _pendingImageData;
+    private TwainMemoryPayloadKind _payloadKind;
+    private FileStream? _group4Spool;
+    private MemoryStream? _jpegHead;
     private long _currentByteLength;
     private int _pageIndex = -1;
     private bool _disposed;
@@ -66,11 +71,7 @@ internal sealed class TwainRawScanSink : IDisposable
                 "TWAIN delivered another transfer before exposing native completion for the previous memory transfer.");
         }
 
-        _pageIndex++;
-        _currentByteLength = 0;
-        _pendingImageData = ToImageData(transferReady.PendingImageInfo);
-        _scanEvents.PageStart();
-        _writer = _sink.BeginArtifact(CreateHeader(_pendingImageData));
+        BeginPage(transferReady.PendingImageInfo);
     }
 
     public void DataTransferred(DataTransferredEventArgs transfer)
@@ -80,11 +81,7 @@ internal sealed class TwainRawScanSink : IDisposable
         {
             // TransferReady is expected for every image, but some sources deliver a native transfer directly. Keep
             // the raw stream usable in that case while still emitting the same page event and page index.
-            _pageIndex++;
-            _currentByteLength = 0;
-            _pendingImageData = ToImageData(transfer.ImageInfo);
-            _scanEvents.PageStart();
-            _writer = _sink.BeginArtifact(CreateHeader(_pendingImageData));
+            BeginPage(transfer.ImageInfo);
         }
 
         switch (transfer.TransferType)
@@ -95,8 +92,7 @@ internal sealed class TwainRawScanSink : IDisposable
                 WriteMemoryBuffer(transfer, isTransferComplete);
                 if (isTransferComplete)
                 {
-                    CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.RasterBlock,
-                        ImageFileFormat.Unknown);
+                    CompleteMemoryTransfer(transfer);
                 }
                 return;
             }
@@ -192,6 +188,33 @@ internal sealed class TwainRawScanSink : IDisposable
         AbortCurrent();
     }
 
+    private void BeginPage(TWImageInfo? imageInfo)
+    {
+        _pageIndex++;
+        _currentByteLength = 0;
+        _pendingImageData = ToImageData(imageInfo);
+        // Classify before the artifact is begun: an unsupported compression then fails the scan with its own error
+        // instead of leaving an open artifact whose abort would be reported first.
+        _payloadKind = _options.TwainOptions.TransferMode == TwainTransferMode.Memory && imageInfo != null
+            ? TwainMemoryTransferPayload.Classify(imageInfo.Compression)
+            : TwainMemoryPayloadKind.Raster;
+        ReleaseGroup4Spool();
+        // Hold back the start of a JPEG stream until its application segments are complete, so the resolution in
+        // them can be set even when they span several TWAIN buffers.
+        _jpegHead = _payloadKind == TwainMemoryPayloadKind.Jpeg ? new MemoryStream() : null;
+        if (_payloadKind == TwainMemoryPayloadKind.Group4Tiff)
+        {
+            // The TIFF header needs the stream length, so the stream is spooled to a temporary file and copied to
+            // the writer in bounded chunks at completion. Memory stays bounded however large the page is, which
+            // matters in the 32-bit worker.
+            _group4Spool = new FileStream(Path.Combine(Path.GetTempPath(), Path.GetRandomFileName()),
+                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, StreamBufferSize,
+                FileOptions.DeleteOnClose);
+        }
+        _scanEvents.PageStart();
+        _writer = _sink.BeginArtifact(CreateHeader(_pendingImageData));
+    }
+
     private void WriteMemoryBuffer(DataTransferredEventArgs transfer, bool isTransferComplete)
     {
         if (transfer.MemoryData == null || transfer.MemoryInfo == null)
@@ -199,21 +222,35 @@ internal sealed class TwainRawScanSink : IDisposable
             throw new InvalidOperationException("TWAIN returned an incomplete memory transfer event.");
         }
 
-        var imageData = _pendingImageData ?? ToImageData(transfer.ImageInfo);
         var memoryInfo = transfer.MemoryInfo;
-        var columns = memoryInfo.Columns;
-        if (columns == 0 && memoryInfo.BytesPerRow > 0 && imageData != null && imageData.BitsPerPixel > 0)
+        var bufferKind = TwainMemoryTransferPayload.Classify(memoryInfo.Compression);
+        if (bufferKind != _payloadKind)
         {
-            columns = (uint) (memoryInfo.BytesPerRow * 8 / imageData.BitsPerPixel);
+            throw new InvalidOperationException(
+                $"TWAIN announced a {_payloadKind} memory transfer but delivered {memoryInfo.Compression} data.");
         }
+        switch (_payloadKind)
+        {
+            case TwainMemoryPayloadKind.Jpeg:
+                WriteJpegBuffer(transfer.MemoryData);
+                return;
+            case TwainMemoryPayloadKind.Group4Tiff:
+                _group4Spool!.Write(transfer.MemoryData, 0, transfer.MemoryData.Length);
+                return;
+        }
+
+        var imageData = _pendingImageData ?? ToImageData(transfer.ImageInfo);
+        var (width, height, stride) = TwainMemoryTransferPayload.ResolveRasterStrip(
+            memoryInfo.Columns, memoryInfo.Rows, memoryInfo.BytesPerRow, transfer.MemoryData.Length,
+            imageData?.Width ?? 0, imageData?.BitsPerPixel ?? 0);
 
         var (pixelFormat, subPixelType) = MapPixelFormat(imageData);
         _writer!.Write(transfer.MemoryData, new RawBlockLayout
         {
             Offset = _currentByteLength,
-            Width = (int) columns,
-            Height = (int) memoryInfo.Rows,
-            Stride = (int) memoryInfo.BytesPerRow,
+            Width = width,
+            Height = height,
+            Stride = stride,
             BitsPerPixel = imageData?.BitsPerPixel,
             BytesPerPixel = imageData == null || imageData.BitsPerPixel < 8
                 ? null
@@ -226,6 +263,50 @@ internal sealed class TwainRawScanSink : IDisposable
             IsLastBlock = isTransferComplete
         });
         _currentByteLength = checked(_currentByteLength + transfer.MemoryData.Length);
+    }
+
+    private void WriteJpegBuffer(byte[] data)
+    {
+        if (_jpegHead == null)
+        {
+            WriteEncoded(data);
+            return;
+        }
+        _jpegHead.Write(data, 0, data.Length);
+        // Decoders and the PDF exporter take the resolution from the JPEG itself, so put the TWAIN resolution there.
+        var result = TwainMemoryTransferPayload.TryApplyJpegDensity(
+            _jpegHead.GetBuffer().AsSpan(0, (int) _jpegHead.Length),
+            _pendingImageData?.XRes ?? 0, _pendingImageData?.YRes ?? 0, out var patched);
+        if (result == JpegDensityPatch.NeedMoreData && _jpegHead.Length < JpegHeadLimit)
+        {
+            return;
+        }
+        if (result == JpegDensityPatch.Patched)
+        {
+            _jpegHead = null;
+            WriteEncoded(patched);
+        }
+        else
+        {
+            FlushJpegHead();
+        }
+    }
+
+    /// <summary>
+    /// Writes a held-back JPEG start unchanged, e.g. when the stream ends before its application segments do.
+    /// </summary>
+    private void FlushJpegHead()
+    {
+        var head = _jpegHead;
+        _jpegHead = null;
+        if (head == null) return;
+        WriteEncoded(head.GetBuffer().AsSpan(0, (int) head.Length));
+    }
+
+    private void WriteEncoded(ReadOnlySpan<byte> data)
+    {
+        _writer!.Write(data);
+        _currentByteLength = checked(_currentByteLength + data.Length);
     }
 
     private void CopyStream(Stream stream)
@@ -243,6 +324,37 @@ internal sealed class TwainRawScanSink : IDisposable
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private void CompleteMemoryTransfer(DataTransferredEventArgs transfer)
+    {
+        switch (_payloadKind)
+        {
+            case TwainMemoryPayloadKind.Jpeg:
+                FlushJpegHead();
+                CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.EncodedImage, ImageFileFormat.Jpeg);
+                return;
+            case TwainMemoryPayloadKind.Group4Tiff:
+            {
+                // The final image info is authoritative; sources that scan to an unknown length report -1 up front.
+                var imageData = ToImageData(transfer.ImageInfo) ?? _pendingImageData;
+                using (var spool = _group4Spool!)
+                {
+                    _group4Spool = null;
+                    var header = TwainMemoryTransferPayload.CreateGroup4TiffHeader(spool.Length,
+                        imageData?.Width ?? 0, imageData?.Height ?? 0, imageData?.XRes ?? 0, imageData?.YRes ?? 0);
+                    _writer!.Write(header);
+                    _currentByteLength = header.Length;
+                    spool.Position = 0;
+                    CopyStream(spool);
+                }
+                CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.EncodedImage, ImageFileFormat.Tiff);
+                return;
+            }
+            default:
+                CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.RasterBlock, ImageFileFormat.Unknown);
+                return;
         }
     }
 
@@ -285,10 +397,19 @@ internal sealed class TwainRawScanSink : IDisposable
         }
     }
 
+    private void ReleaseGroup4Spool()
+    {
+        // Disposing deletes the temporary file (FileOptions.DeleteOnClose).
+        _group4Spool?.Dispose();
+        _group4Spool = null;
+    }
+
     private void AbortCurrent()
     {
         var writer = _writer;
         _writer = null;
+        ReleaseGroup4Spool();
+        _jpegHead = null;
         _currentByteLength = 0;
         if (writer == null) return;
         try
@@ -304,16 +425,24 @@ internal sealed class TwainRawScanSink : IDisposable
     private RawScanArtifactHeader CreateHeader(TwainImageData? imageData)
     {
         var (pixelFormat, subPixelType) = MapPixelFormat(imageData);
+        // The header must name the payload format from the start: consumers pick the payload file name and decoder
+        // from it before the transfer completes.
+        var (type, format, contentType, extension) = _options.TwainOptions.TransferMode == TwainTransferMode.Native
+            ? (RawScanArtifactType.NativeBitmap, ImageFileFormat.Bmp, "image/bmp", ".bmp")
+            : _payloadKind switch
+            {
+                TwainMemoryPayloadKind.Jpeg =>
+                    (RawScanArtifactType.EncodedImage, ImageFileFormat.Jpeg, "image/jpeg", ".jpg"),
+                TwainMemoryPayloadKind.Group4Tiff =>
+                    (RawScanArtifactType.EncodedImage, ImageFileFormat.Tiff, "image/tiff", ".tif"),
+                _ => (RawScanArtifactType.RasterBlock, ImageFileFormat.Unknown, (string?) null, (string?) null)
+            };
         return new RawScanArtifactHeader
         {
-            Type = _options.TwainOptions.TransferMode == TwainTransferMode.Native
-                ? RawScanArtifactType.NativeBitmap
-                : RawScanArtifactType.RasterBlock,
-            ImageFormat = _options.TwainOptions.TransferMode == TwainTransferMode.Native
-                ? ImageFileFormat.Bmp
-                : ImageFileFormat.Unknown,
-            ContentType = _options.TwainOptions.TransferMode == TwainTransferMode.Native ? "image/bmp" : null,
-            FileExtension = _options.TwainOptions.TransferMode == TwainTransferMode.Native ? ".bmp" : null,
+            Type = type,
+            ImageFormat = format,
+            ContentType = contentType,
+            FileExtension = extension,
             PixelFormat = pixelFormat,
             SubPixelType = subPixelType,
             FrameType = RawScanFrameType.Image,
@@ -353,7 +482,13 @@ internal sealed class TwainRawScanSink : IDisposable
             SubPixelType = subPixelType,
             FrameType = RawScanFrameType.Image,
             ImageFormat = format,
-            ContentType = format == ImageFileFormat.Bmp ? "image/bmp" : null,
+            ContentType = format switch
+            {
+                ImageFileFormat.Bmp => "image/bmp",
+                ImageFileFormat.Jpeg => "image/jpeg",
+                ImageFileFormat.Tiff => "image/tiff",
+                _ => null
+            },
             PageCount = 1,
             FrameCount = 1,
             PageSide = extendedImageMetadata.PageSide,
