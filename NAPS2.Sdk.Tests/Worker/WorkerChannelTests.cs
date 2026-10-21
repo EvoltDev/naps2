@@ -268,6 +268,78 @@ public class WorkerChannelTests : ContextualTests
         Assert.Equal(1, sink.Artifacts[0].DisposeCount);
     }
 
+    [Fact]
+    public async Task ScanRawDropsArtifactDiscardedBySourceAndContinues()
+    {
+        var remoteScanController = Substitute.For<IRemoteScanController>();
+        remoteScanController.ScanRaw(Arg.Any<RawScanOptions>(), Arg.Any<CancellationToken>(),
+                Arg.Any<IScanEvents>(), Arg.Any<IRawScanSink>())
+            .Returns(async callInfo =>
+            {
+                var sink = (IRawScanSink) callInfo[3];
+                await WriteCompleteArtifact(sink, "page-1");
+                // The source announces one more transfer and then cancels it.
+                var skipped = (RawWorkerArtifactWriter) sink.BeginArtifact(new RawScanArtifactHeader
+                {
+                    Type = RawScanArtifactType.RasterBlock,
+                    SourceId = "skipped"
+                });
+                await skipped.DiscardAsync("The scanner cancelled this transfer.");
+                await WriteCompleteArtifact(sink, "page-2");
+            });
+
+        using var channel = Start(remoteScanController);
+        var sink = new CapturingRawSink();
+        await channel.Client.ScanRaw(new RawScanOptions { Driver = Driver.Twain }, CancellationToken.None,
+            Substitute.For<IScanEvents>(), sink);
+
+        Assert.Equal(["page-1", "skipped", "page-2"], sink.Artifacts.Select(x => x.Header.SourceId));
+        Assert.NotNull(sink.Artifacts[0].Metadata);
+        Assert.Null(sink.Artifacts[1].Metadata);
+        Assert.Equal(1, sink.Artifacts[1].AbortCount);
+        Assert.NotNull(sink.Artifacts[2].Metadata);
+    }
+
+    [Fact]
+    public async Task ScanRawReportsDriverErrorThatFollowsAnAbort()
+    {
+        var remoteScanController = Substitute.For<IRemoteScanController>();
+        remoteScanController.ScanRaw(Arg.Any<RawScanOptions>(), Arg.Any<CancellationToken>(),
+                Arg.Any<IScanEvents>(), Arg.Any<IRawScanSink>())
+            .Returns(callInfo =>
+            {
+                var sink = (IRawScanSink) callInfo[3];
+                sink.BeginArtifact(new RawScanArtifactHeader
+                {
+                    Type = RawScanArtifactType.RasterBlock,
+                    SourceId = "jammed"
+                });
+                // The worker aborts the open artifact, then sends this error.
+                throw new DevicePaperJamException();
+            });
+
+        using var channel = Start(remoteScanController);
+        var sink = new CapturingRawSink();
+        await Assert.ThrowsAsync<DevicePaperJamException>(() => channel.Client.ScanRaw(
+            new RawScanOptions { Driver = Driver.Twain }, CancellationToken.None,
+            Substitute.For<IScanEvents>(), sink));
+
+        Assert.Single(sink.Artifacts);
+        Assert.Equal(1, sink.Artifacts[0].AbortCount);
+        Assert.Equal(1, sink.Artifacts[0].DisposeCount);
+    }
+
+    private static Task WriteCompleteArtifact(IRawScanSink sink, string sourceId)
+    {
+        var artifact = sink.BeginArtifact(new RawScanArtifactHeader
+        {
+            Type = RawScanArtifactType.NativeBitmap,
+            SourceId = sourceId
+        });
+        artifact.Write(new byte[] { 1, 2 });
+        return artifact.CompleteAsync(new RawScanArtifactMetadata { ByteLength = 2 });
+    }
+
     private class MockRemoteScanController : IRemoteScanController
     {
         public List<ProcessedImage> Images { get; set; } = [];
@@ -344,6 +416,8 @@ public class WorkerChannelTests : ContextualTests
 
         public int WriteCount { get; private set; }
 
+        public int AbortCount { get; private set; }
+
         public void Write(ReadOnlySpan<byte> data, RawBlockLayout? layout = null)
         {
             WriteCount++;
@@ -358,7 +432,11 @@ public class WorkerChannelTests : ContextualTests
             return Task.CompletedTask;
         }
 
-        public Task AbortAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task AbortAsync(CancellationToken cancellationToken = default)
+        {
+            AbortCount++;
+            return Task.CompletedTask;
+        }
 
         public void Dispose()
         {

@@ -158,6 +158,7 @@ internal class WorkerServiceAdapter
         var writers = new Dictionary<ulong, IRawScanArtifactWriter>();
         var nextSequences = new Dictionary<ulong, ulong>();
         var allWriters = new List<IRawScanArtifactWriter>();
+        RawScanArtifactAbort? terminalAbort = null;
         try
         {
             streamingCall = _client.ScanRaw(request, cancellationToken: cancelToken);
@@ -249,12 +250,20 @@ internal class WorkerServiceAdapter
                         {
                             throw new RawWorkerArtifactAbortedException(abort.ArtifactId, abort.Reason, ex);
                         }
-                        // An abort is a terminal protocol failure even when
-                        // the local sink accepted the cleanup operation. The
-                        // server supplied reason is part of the exception.
                         writers.Remove(abort.ArtifactId);
                         nextSequences.Remove(abort.ArtifactId);
-                        throw new RawWorkerArtifactAbortedException(abort.ArtifactId, abort.Reason);
+                        if (abort.DiscardedBySource)
+                        {
+                            // The source skipped this transfer and keeps
+                            // scanning; the artifact is dropped, not failed.
+                            break;
+                        }
+                        // Any other abort fails the scan. The worker aborts
+                        // open artifacts before it sends a driver error (e.g.
+                        // a paper jam), so keep reading: a following error is
+                        // the real cause and is thrown instead of the abort.
+                        terminalAbort ??= abort;
+                        break;
                     }
                     case RawScanResponse.PayloadOneofCase.PageStart:
                         scanEvents.PageStart();
@@ -281,6 +290,10 @@ internal class WorkerServiceAdapter
                 }
             }
 
+            if (terminalAbort != null)
+            {
+                throw new RawWorkerArtifactAbortedException(terminalAbort.ArtifactId, terminalAbort.Reason);
+            }
             if (!protocolReceived)
             {
                 throw new InvalidOperationException("The worker did not negotiate the raw scan protocol.");

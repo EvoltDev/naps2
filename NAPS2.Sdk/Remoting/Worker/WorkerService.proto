@@ -172,6 +172,9 @@ message RawScanMetadataValue {
 message RawScanArtifactAbort {
 	uint64 artifactId = 1;
 	string reason = 2;
+	// The source skipped this one transfer and the scan continues (e.g. TWAIN TWRC_CANCEL). Any other abort is a
+	// failure of the scan.
+	bool discardedBySource = 3;
 }
 
 message ProgressEvent {

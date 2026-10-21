@@ -217,7 +217,7 @@ internal class TwainScanRunner
         _logger.LogDebug("NAPS2.TW - TransferCanceled");
         if (_rawScanSink != null)
         {
-            _rawScanSink.TransferCanceled();
+            _rawScanSink.SourceCanceledTransfer();
         }
         else
         {
