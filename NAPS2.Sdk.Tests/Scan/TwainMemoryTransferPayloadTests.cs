@@ -1,4 +1,5 @@
 #if !MACOS
+using NAPS2.Pdf;
 using NAPS2.Scan.Internal.Twain;
 using NAPS2.Sdk.Tests.Asserts;
 using NTwain.Data;
@@ -120,47 +121,105 @@ public class TwainMemoryTransferPayloadTests : ContextualTests
     }
 
     [Fact]
-    public void ApplyJfifDensity_ReplacesExistingDensity()
+    public void ApplyJpegDensity_ReplacesJfifDensity()
     {
         var jpeg = EncodeJpeg(72);
         Assert.Equal(0xE0, jpeg[3]); // ImageSharp writes a JFIF APP0 segment
 
-        Assert.True(TwainMemoryTransferPayload.TryApplyJfifDensity(jpeg, 200, 300, out var patched));
-        using var image = ImageContext.Load(new MemoryStream(patched));
+        Assert.Equal(JpegDensityPatch.Patched,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg, 200, 300, out var patched));
 
         Assert.Equal(jpeg.Length, patched.Length);
-        Assert.Equal(200, image.HorizontalResolution, 1);
-        // Checked in the bytes: the ImageSharp backend reports the horizontal resolution for both axes.
-        Assert.Equal(1, patched[13]); // dots per inch
-        Assert.Equal(300, (patched[16] << 8) | patched[17]);
+        AssertResolution(patched, 200, 300);
     }
 
     [Fact]
-    public void ApplyJfifDensity_InsertsSegmentWhenMissingAndPatchesOnlyTheFirstBuffer()
+    public void ApplyJpegDensity_OverridesExifResolution()
+    {
+        // EXIF only, 72 dpi. EXIF takes precedence over JFIF in the PDF exporter's JPEG reader, so it must be
+        // patched too, not just covered by an inserted JFIF segment.
+        var jpeg = ImageResources.dog_exif;
+        Assert.Equal(72, JpegFormatHelper.ReadHeader(new MemoryStream(jpeg))!.HorizontalDpi);
+
+        Assert.Equal(JpegDensityPatch.Patched,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg, 200, 300, out var patched));
+
+        AssertResolution(patched, 200, 300);
+        Assert.True(JpegFormatHelper.ReadHeader(new MemoryStream(patched))!.HasExifHeader);
+    }
+
+    [Fact]
+    public void ApplyJpegDensity_InsertsJfifSegmentWhenMissing()
     {
         var withApp0 = EncodeJpeg(72);
         var app0Length = (withApp0[4] << 8) | withApp0[5];
         // A JPEG without APP0: SOI followed directly by the next segment.
         byte[] jpeg = [..withApp0.AsSpan(0, 2), ..withApp0.AsSpan(4 + app0Length)];
-        var firstBuffer = jpeg.AsSpan(0, 64);
 
-        Assert.True(TwainMemoryTransferPayload.TryApplyJfifDensity(firstBuffer, 200, 200, out var patched));
-        byte[] stream = [..patched, ..jpeg.AsSpan(64)];
-        using var image = ImageContext.Load(new MemoryStream(stream));
+        Assert.Equal(JpegDensityPatch.Patched,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg, 200, 300, out var patched));
 
-        Assert.Equal(jpeg.Length + 18, stream.Length);
-        Assert.Equal(16, image.Width);
-        Assert.Equal(200, image.HorizontalResolution, 1);
-        Assert.Equal(200, image.VerticalResolution, 1);
+        Assert.Equal(jpeg.Length + 18, patched.Length);
+        AssertResolution(patched, 200, 300);
     }
 
     [Fact]
-    public void ApplyJfifDensity_LeavesNonJpegDataAndUnknownResolutionAlone()
+    public void ApplyJpegDensity_AsksForMoreDataUntilApplicationSegmentsAreComplete()
+    {
+        // The sink feeds TWAIN buffers until the header is complete; an EXIF segment can span buffers.
+        var jpeg = ImageResources.dog_exif;
+        var headerEnd = ApplicationSegmentsEnd(jpeg);
+        Assert.True(headerEnd > 4 + ((jpeg[4] << 8) | jpeg[5])); // more application segments follow EXIF
+
+        Assert.Equal(JpegDensityPatch.NeedMoreData,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg.AsSpan(0, 1), 200, 200, out _));
+        Assert.Equal(JpegDensityPatch.NeedMoreData,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg.AsSpan(0, headerEnd - 1), 200, 200, out _));
+        Assert.Equal(JpegDensityPatch.Patched,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg.AsSpan(0, headerEnd + 4), 200, 200, out var head));
+
+        // The patched head followed by the untouched rest of the stream is a valid JPEG.
+        byte[] stream = [..head, ..jpeg.AsSpan(headerEnd + 4)];
+        AssertResolution(stream, 200, 200);
+    }
+
+    /// <summary>
+    /// Returns the offset just past the application segments (APP0–APP15) that follow the SOI marker.
+    /// </summary>
+    private static int ApplicationSegmentsEnd(byte[] jpeg)
+    {
+        var position = 2;
+        while (jpeg[position + 1] is >= 0xE0 and <= 0xEF)
+        {
+            position += 2 + ((jpeg[position + 2] << 8) | jpeg[position + 3]);
+        }
+        return position;
+    }
+
+    [Fact]
+    public void ApplyJpegDensity_LeavesNonJpegDataAndUnknownResolutionAlone()
     {
         var jpeg = EncodeJpeg(72);
 
-        Assert.False(TwainMemoryTransferPayload.TryApplyJfifDensity(jpeg, 0, 0, out _));
-        Assert.False(TwainMemoryTransferPayload.TryApplyJfifDensity([0x00, 0x01, 0x02], 200, 200, out _));
+        Assert.Equal(JpegDensityPatch.NotApplicable,
+            TwainMemoryTransferPayload.TryApplyJpegDensity(jpeg, 0, 0, out _));
+        Assert.Equal(JpegDensityPatch.NotApplicable,
+            TwainMemoryTransferPayload.TryApplyJpegDensity([0x00, 0x01, 0x02], 200, 200, out _));
+    }
+
+    /// <summary>
+    /// Checks the resolution through the PDF exporter's JPEG reader (which reads JFIF and EXIF, EXIF last) and
+    /// through the image decoder. The ImageSharp backend reports the horizontal resolution for both axes, so the
+    /// decoder is only checked horizontally.
+    /// </summary>
+    private void AssertResolution(byte[] jpeg, double xDpi, double yDpi)
+    {
+        var header = JpegFormatHelper.ReadHeader(new MemoryStream(jpeg));
+        Assert.NotNull(header);
+        Assert.Equal(xDpi, header.HorizontalDpi, 1);
+        Assert.Equal(yDpi, header.VerticalDpi, 1);
+        using var image = ImageContext.Load(new MemoryStream(jpeg));
+        Assert.Equal(xDpi, image.HorizontalResolution, 1);
     }
 
     /// <summary>

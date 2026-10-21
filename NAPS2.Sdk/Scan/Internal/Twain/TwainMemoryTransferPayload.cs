@@ -6,6 +6,18 @@ namespace NAPS2.Scan.Internal.Twain;
 /// <summary>
 /// How the bytes of a TWAIN memory transfer are to be stored as a raw artifact.
 /// </summary>
+internal enum JpegDensityPatch
+{
+    /// <summary>The head was patched; write the patched bytes instead.</summary>
+    Patched,
+
+    /// <summary>The application segments are not complete yet; supply more of the stream.</summary>
+    NeedMoreData,
+
+    /// <summary>Not a JPEG stream, malformed, or no resolution to apply; write the bytes unchanged.</summary>
+    NotApplicable
+}
+
 internal enum TwainMemoryPayloadKind
 {
     /// <summary>Uncompressed strips, stored as raster blocks with a layout per strip.</summary>
@@ -164,38 +176,85 @@ internal static class TwainMemoryTransferPayload
     }
 
     /// <summary>
-    /// Sets the pixel density in the first buffer of a JPEG stream to the TWAIN resolution, without re-encoding.
-    /// Decoders take the resolution from the JPEG itself, and a scanner's JPEG may carry no density or a different
-    /// one. An existing JFIF APP0 segment gets its density replaced; otherwise one is inserted after the SOI marker.
+    /// Sets the resolution recorded in the start of a JPEG stream to the TWAIN resolution, without re-encoding.
+    /// Decoders and the PDF exporter take the resolution from the JPEG itself, and a scanner's JPEG may carry none
+    /// or a different one, in JFIF and/or EXIF (where EXIF takes precedence for some readers). Both are made to
+    /// agree: a JFIF APP0 density is replaced or, if there is no APP0, one is inserted after the SOI marker; an
+    /// EXIF XResolution/YResolution/ResolutionUnit is overwritten in place.
     /// </summary>
-    /// <returns>False when the resolution is unknown or the buffer does not start a JPEG stream; the buffer is then
-    /// stored unchanged.</returns>
-    public static bool TryApplyJfifDensity(ReadOnlySpan<byte> firstBuffer, double xRes, double yRes,
+    /// <param name="head">The first bytes of the stream. All application segments (APP0–APP15) that follow the SOI
+    /// marker must be complete to patch them; otherwise <see cref="JpegDensityPatch.NeedMoreData"/> is returned.</param>
+    /// <param name="patched">The patched replacement for <paramref name="head"/> when the result is
+    /// <see cref="JpegDensityPatch.Patched"/>.</param>
+    public static JpegDensityPatch TryApplyJpegDensity(ReadOnlySpan<byte> head, double xRes, double yRes,
         out byte[] patched)
     {
         patched = [];
         if (xRes <= 0 || yRes <= 0 || xRes > ushort.MaxValue || yRes > ushort.MaxValue)
         {
-            return false;
+            return JpegDensityPatch.NotApplicable;
         }
-        if (firstBuffer.Length < 2 || firstBuffer[0] != 0xFF || firstBuffer[1] != 0xD8)
+        if (head.Length < 2)
         {
-            return false;
+            return JpegDensityPatch.NeedMoreData;
+        }
+        if (head[0] != 0xFF || head[1] != 0xD8)
+        {
+            return JpegDensityPatch.NotApplicable;
         }
         var x = (ushort) Math.Round(xRes);
         var y = (ushort) Math.Round(yRes);
 
-        if (firstBuffer.Length >= 18 && firstBuffer[2] == 0xFF && firstBuffer[3] == 0xE0 &&
-            firstBuffer.Slice(6, 5).SequenceEqual("JFIF\0"u8))
+        var copy = head.ToArray();
+        var hasJfif = false;
+        var position = 2;
+        while (true)
         {
-            // SOI, APP0 marker, length, "JFIF\0", version (2), units (1), X density (2), Y density (2).
-            patched = firstBuffer.ToArray();
-            patched[13] = 1; // dots per inch
-            WriteBigEndian(patched, 14, x);
-            WriteBigEndian(patched, 16, y);
-            return true;
+            if (position + 4 > copy.Length)
+            {
+                return JpegDensityPatch.NeedMoreData;
+            }
+            if (copy[position] != 0xFF)
+            {
+                return JpegDensityPatch.NotApplicable;
+            }
+            var marker = copy[position + 1];
+            if (marker < 0xE0 || marker > 0xEF)
+            {
+                // The application segments are done; the frame data that follows never carries a resolution.
+                break;
+            }
+            var length = (copy[position + 2] << 8) | copy[position + 3];
+            if (length < 2)
+            {
+                return JpegDensityPatch.NotApplicable;
+            }
+            var end = position + 2 + length;
+            if (end > copy.Length)
+            {
+                return JpegDensityPatch.NeedMoreData;
+            }
+            var data = copy.AsSpan(position + 4, length - 2);
+            if (marker == 0xE0 && data.Length >= 12 && data.StartsWith("JFIF\0"u8))
+            {
+                // "JFIF\0", version (2), units (1), X density (2), Y density (2).
+                data[7] = 1; // dots per inch
+                WriteBigEndian(data, 8, x);
+                WriteBigEndian(data, 10, y);
+                hasJfif = true;
+            }
+            else if (marker == 0xE1 && data.Length >= 14 && data.StartsWith("Exif\0\0"u8))
+            {
+                PatchExifResolution(data.Slice(6), x, y);
+            }
+            position = end;
         }
 
+        if (hasJfif)
+        {
+            patched = copy;
+            return JpegDensityPatch.Patched;
+        }
         byte[] app0 =
         [
             0xFF, 0xE0, 0x00, 0x10, (byte) 'J', (byte) 'F', (byte) 'I', (byte) 'F', 0x00,
@@ -206,16 +265,73 @@ internal static class TwainMemoryTransferPayload
         ];
         WriteBigEndian(app0, 12, x);
         WriteBigEndian(app0, 14, y);
-        patched = new byte[firstBuffer.Length + app0.Length];
-        firstBuffer.Slice(0, 2).CopyTo(patched);
+        patched = new byte[copy.Length + app0.Length];
+        copy.AsSpan(0, 2).CopyTo(patched);
         app0.CopyTo(patched, 2);
-        firstBuffer.Slice(2).CopyTo(patched.AsSpan(2 + app0.Length));
-        return true;
+        copy.AsSpan(2).CopyTo(patched.AsSpan(2 + app0.Length));
+        return JpegDensityPatch.Patched;
 
-        static void WriteBigEndian(byte[] target, int offset, ushort value)
+        static void WriteBigEndian(Span<byte> target, int offset, ushort value)
         {
             target[offset] = (byte) (value >> 8);
             target[offset + 1] = (byte) value;
+        }
+    }
+
+    /// <summary>
+    /// Overwrites the resolution tags of the first image directory of an EXIF TIFF structure in place. Tags that are
+    /// absent or malformed are left alone; readers then fall back to the JFIF density.
+    /// </summary>
+    private static void PatchExifResolution(Span<byte> tiff, ushort x, ushort y)
+    {
+        if (tiff.Length < 8) return;
+        bool littleEndian;
+        if (tiff[0] == 0x49 && tiff[1] == 0x49) littleEndian = true;
+        else if (tiff[0] == 0x4D && tiff[1] == 0x4D) littleEndian = false;
+        else return;
+        if (Read16(tiff, 2) != 42) return;
+        var ifd = Read32(tiff, 4);
+        if (ifd < 8 || (long) ifd + 2 > tiff.Length) return;
+        var count = Read16(tiff, (int) ifd);
+        for (var i = 0; i < count; i++)
+        {
+            var entry = (int) ifd + 2 + i * 12;
+            if (entry + 12 > tiff.Length) return;
+            var tag = Read16(tiff, entry);
+            var type = Read16(tiff, entry + 2);
+            if ((tag == 282 || tag == 283) && type == 5) // XResolution / YResolution, RATIONAL
+            {
+                var valueOffset = Read32(tiff, entry + 8);
+                if ((long) valueOffset + 8 > tiff.Length) continue;
+                Write32(tiff, (int) valueOffset, tag == 282 ? x : y);
+                Write32(tiff, (int) valueOffset + 4, 1);
+            }
+            else if (tag == 296 && type == 3) // ResolutionUnit, SHORT
+            {
+                Write16(tiff, entry + 8, 2); // inch
+            }
+        }
+
+        ushort Read16(Span<byte> b, int o) => littleEndian
+            ? (ushort) (b[o] | (b[o + 1] << 8))
+            : (ushort) ((b[o] << 8) | b[o + 1]);
+
+        uint Read32(Span<byte> b, int o) => littleEndian
+            ? (uint) (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24))
+            : (uint) ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]);
+
+        void Write16(Span<byte> b, int o, ushort v)
+        {
+            b[o] = (byte) (littleEndian ? v : v >> 8);
+            b[o + 1] = (byte) (littleEndian ? v >> 8 : v);
+        }
+
+        void Write32(Span<byte> b, int o, uint v)
+        {
+            for (var k = 0; k < 4; k++)
+            {
+                b[o + k] = (byte) (v >> (littleEndian ? 8 * k : 8 * (3 - k)));
+            }
         }
     }
 

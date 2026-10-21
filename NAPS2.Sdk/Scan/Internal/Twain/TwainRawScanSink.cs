@@ -22,6 +22,8 @@ namespace NAPS2.Scan.Internal.Twain;
 internal sealed class TwainRawScanSink : IDisposable
 {
     private const int StreamBufferSize = 128 * 1024;
+    // JPEG application segments are at most 64 KiB each; past this the resolution is left as the scanner wrote it.
+    private const int JpegHeadLimit = 1024 * 1024;
     private const string TransferCompletePropertyName = "IsTransferComplete";
 
     private readonly RawScanOptions _options;
@@ -32,6 +34,7 @@ internal sealed class TwainRawScanSink : IDisposable
     private TwainImageData? _pendingImageData;
     private TwainMemoryPayloadKind _payloadKind;
     private FileStream? _group4Spool;
+    private MemoryStream? _jpegHead;
     private long _currentByteLength;
     private int _pageIndex = -1;
     private bool _disposed;
@@ -165,6 +168,9 @@ internal sealed class TwainRawScanSink : IDisposable
             ? TwainMemoryTransferPayload.Classify(imageInfo.Compression)
             : TwainMemoryPayloadKind.Raster;
         ReleaseGroup4Spool();
+        // Hold back the start of a JPEG stream until its application segments are complete, so the resolution in
+        // them can be set even when they span several TWAIN buffers.
+        _jpegHead = _payloadKind == TwainMemoryPayloadKind.Jpeg ? new MemoryStream() : null;
         if (_payloadKind == TwainMemoryPayloadKind.Group4Tiff)
         {
             // The TIFF header needs the stream length, so the stream is spooled to a temporary file and copied to
@@ -195,18 +201,8 @@ internal sealed class TwainRawScanSink : IDisposable
         switch (_payloadKind)
         {
             case TwainMemoryPayloadKind.Jpeg:
-            {
-                ReadOnlySpan<byte> data = transfer.MemoryData;
-                // Decoders take the resolution from the JPEG itself, so put the TWAIN resolution there.
-                if (_currentByteLength == 0 && TwainMemoryTransferPayload.TryApplyJfifDensity(data,
-                        _pendingImageData?.XRes ?? 0, _pendingImageData?.YRes ?? 0, out var patched))
-                {
-                    data = patched;
-                }
-                _writer!.Write(data);
-                _currentByteLength = checked(_currentByteLength + data.Length);
+                WriteJpegBuffer(transfer.MemoryData);
                 return;
-            }
             case TwainMemoryPayloadKind.Group4Tiff:
                 _group4Spool!.Write(transfer.MemoryData, 0, transfer.MemoryData.Length);
                 return;
@@ -238,6 +234,50 @@ internal sealed class TwainRawScanSink : IDisposable
         _currentByteLength = checked(_currentByteLength + transfer.MemoryData.Length);
     }
 
+    private void WriteJpegBuffer(byte[] data)
+    {
+        if (_jpegHead == null)
+        {
+            WriteEncoded(data);
+            return;
+        }
+        _jpegHead.Write(data, 0, data.Length);
+        // Decoders and the PDF exporter take the resolution from the JPEG itself, so put the TWAIN resolution there.
+        var result = TwainMemoryTransferPayload.TryApplyJpegDensity(
+            _jpegHead.GetBuffer().AsSpan(0, (int) _jpegHead.Length),
+            _pendingImageData?.XRes ?? 0, _pendingImageData?.YRes ?? 0, out var patched);
+        if (result == JpegDensityPatch.NeedMoreData && _jpegHead.Length < JpegHeadLimit)
+        {
+            return;
+        }
+        if (result == JpegDensityPatch.Patched)
+        {
+            _jpegHead = null;
+            WriteEncoded(patched);
+        }
+        else
+        {
+            FlushJpegHead();
+        }
+    }
+
+    /// <summary>
+    /// Writes a held-back JPEG start unchanged, e.g. when the stream ends before its application segments do.
+    /// </summary>
+    private void FlushJpegHead()
+    {
+        var head = _jpegHead;
+        _jpegHead = null;
+        if (head == null) return;
+        WriteEncoded(head.GetBuffer().AsSpan(0, (int) head.Length));
+    }
+
+    private void WriteEncoded(ReadOnlySpan<byte> data)
+    {
+        _writer!.Write(data);
+        _currentByteLength = checked(_currentByteLength + data.Length);
+    }
+
     private void CopyStream(Stream stream)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
@@ -261,6 +301,7 @@ internal sealed class TwainRawScanSink : IDisposable
         switch (_payloadKind)
         {
             case TwainMemoryPayloadKind.Jpeg:
+                FlushJpegHead();
                 CompleteCurrent(transfer.ImageInfo, transfer, RawScanArtifactType.EncodedImage, ImageFileFormat.Jpeg);
                 return;
             case TwainMemoryPayloadKind.Group4Tiff:
@@ -337,6 +378,7 @@ internal sealed class TwainRawScanSink : IDisposable
         var writer = _writer;
         _writer = null;
         ReleaseGroup4Spool();
+        _jpegHead = null;
         _currentByteLength = 0;
         if (writer == null) return;
         try
