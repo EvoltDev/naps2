@@ -45,6 +45,10 @@ internal sealed class WiaSettingAccess : IDriverSettingAccess
                 Message = $"The driver does not expose {binding.NativeName}."
             };
         }
+        if (binding.ValueType == NativeValueType.Int32Array)
+        {
+            return ProbeVector(binding, property);
+        }
         if (property.Type != I4)
         {
             return new NativeProbe
@@ -90,6 +94,12 @@ internal sealed class WiaSettingAccess : IDriverSettingAccess
         }
         try
         {
+            if (binding.ValueType == NativeValueType.Int32Array)
+            {
+                WiaVectorProperty.Write(property,
+                    ((object[]) nativeValue).Select(x => (int) KeyedSettingNegotiator.ToLong(x)).ToList());
+                return new NativeWriteResult(NativeWriteStatus.Accepted, null);
+            }
             property.Value = (int) KeyedSettingNegotiator.ToLong(nativeValue);
             return new NativeWriteResult(NativeWriteStatus.Accepted, null);
         }
@@ -101,7 +111,60 @@ internal sealed class WiaSettingAccess : IDriverSettingAccess
         }
     }
 
-    public object? Read(NativeSettingBinding binding) => ToInt(Find(binding.NativeId)?.Value);
+    public object? Read(NativeSettingBinding binding)
+    {
+        var property = Find(binding.NativeId);
+        if (binding.ValueType != NativeValueType.Int32Array)
+        {
+            return ToInt(property?.Value);
+        }
+        return property == null ? null : ReadVector(property);
+    }
+
+    /// <summary>
+    /// A VT_I4 vector property. Its allowed values come from <see cref="NativeSettingBinding.ValuesNativeId"/> (for
+    /// the enabled barcode types, the supported ones), itself a vector.
+    /// </summary>
+    private NativeProbe ProbeVector(NativeSettingBinding binding, WiaProperty property)
+    {
+        if (property.Type != WiaVectorProperty.VtI4Vector)
+        {
+            return new NativeProbe
+            {
+                State = DriverProcessingCapabilityState.Unsupported,
+                Message = $"{binding.NativeName} has an unexpected property type {property.Type}."
+            };
+        }
+        var flags = property.Attributes.Flags;
+        var canRead = flags.HasFlag(WiaPropertyFlags.Read);
+        var canWrite = flags.HasFlag(WiaPropertyFlags.Write);
+        var values = binding.ValuesNativeId is { } valuesId && Find(valuesId) is { } offered
+            ? ReadVector(offered)
+            : null;
+        return new NativeProbe
+        {
+            State = canRead
+                ? canWrite ? DriverProcessingCapabilityState.Writable : DriverProcessingCapabilityState.ReadOnly
+                : canWrite
+                    ? DriverProcessingCapabilityState.Unknown
+                    : DriverProcessingCapabilityState.Unsupported,
+            Current = canRead ? ReadVector(property) : null,
+            Values = values
+        };
+    }
+
+    private object[]? ReadVector(WiaProperty property)
+    {
+        try
+        {
+            return WiaVectorProperty.Read(property).Select(x => (object) x).ToArray();
+        }
+        catch (Exception e)
+        {
+            _logger?.LogDebug(e, "Could not read WIA vector property {PropertyId}", property.Id);
+            return null;
+        }
+    }
 
     private WiaProperty? Find(int propertyId)
     {

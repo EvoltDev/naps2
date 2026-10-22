@@ -69,6 +69,8 @@ internal static class TwainDriverProcessing
         var neutralized = new List<string>();
         var failed = new List<string>();
 
+        ApplyKeyedSettings(source, KeyedSubset(options, beforeTypedOperations: true), requested, effective,
+            settings, rejected, unsupported, failed, logger, unrestored);
         ApplyNumeric(source.Capabilities.ICapBrightness, Brightness, options.Brightness, requested, effective, settings,
             rejected, unsupported, failed, logger);
         ApplyNumeric(source.Capabilities.ICapContrast, Contrast, options.Contrast, requested, effective, settings,
@@ -91,8 +93,8 @@ internal static class TwainDriverProcessing
             failed, logger);
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
-        ApplyKeyedSettings(source, options, requested, effective, settings, rejected, unsupported, failed,
-            logger, unrestored);
+        ApplyKeyedSettings(source, KeyedSubset(options, beforeTypedOperations: false), requested, effective,
+            settings, rejected, unsupported, failed, logger, unrestored);
 
         return new DriverProcessingResult
         {
@@ -105,6 +107,19 @@ internal static class TwainDriverProcessing
             FailedSettings = failed
         };
     }
+
+    /// <summary>
+    /// The keyed requests negotiated before the typed operations (<see cref="KeyedDriverSettings.BeforeTypedOperationKeys"/>)
+    /// or after them. A request with an empty key stays with the later pass, which reports it.
+    /// </summary>
+    private static DriverProcessingOptions KeyedSubset(DriverProcessingOptions options, bool beforeTypedOperations) =>
+        new()
+        {
+            Settings = (options.Settings ?? []).Where(request =>
+                    KeyedDriverSettings.BeforeTypedOperationKeys.Contains(request?.Key?.Trim() ?? "") ==
+                    beforeTypedOperations)
+                .ToList()
+        };
 
     /// <summary>
     /// Builds the result for a request that was deliberately left to the native source UI.

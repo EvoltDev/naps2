@@ -49,6 +49,14 @@ internal static class TwainSettingBindings
         ["highPass"] = 4
     };
 
+    // Sharpening through TWIF_*: no filter is no sharpening, and a high-pass filter is the one standard sharpening. The
+    // stronger vendor levels have no standard equivalent and fall through to a vendor binding.
+    internal static readonly IReadOnlyDictionary<string, int> SharpeningFilters = new Dictionary<string, int>
+    {
+        ["none"] = 0, // TWIF_NONE
+        ["normal"] = 4 // TWIF_HIGHPASS
+    };
+
     // TWNF_*
     internal static readonly IReadOnlyDictionary<string, int> NoiseFilters = new Dictionary<string, int>
     {
@@ -157,6 +165,7 @@ internal static class TwainSettingBindings
             FromNative = RealFromNative
         },
         Named(DriverSettingKeys.ImageFilter, ICapImageFilter, "ICAP_IMAGEFILTER", 130, ImageFilters),
+        Named(DriverSettingKeys.Sharpening, ICapImageFilter, "ICAP_IMAGEFILTER", 135, SharpeningFilters),
         Named(DriverSettingKeys.NoiseFilter, ICapNoiseFilter, "ICAP_NOISEFILTER", 140, NoiseFilters),
         Named(DriverSettingKeys.ColorDropout, ICapFilter, "ICAP_FILTER", 150, DropoutColors),
         Boolean(DriverSettingKeys.BarcodeDetection, ICapBarcodeDetectionEnabled, "ICAP_BARCODEDETECTIONENABLED", 200),
@@ -182,8 +191,14 @@ internal static class TwainSettingBindings
         {
             [DriverSettingKeys.BarcodeMaximumCount] =
                 "TWAIN has no standard maximum barcode count; ICAP_BARCODEMAXSEARCHPRIORITIES limits the priority " +
-                "list, not the number of results."
+                "list, not the number of results.",
+            [DriverSettingKeys.ColorDropoutRed] = RgbDropoutGap,
+            [DriverSettingKeys.ColorDropoutGreen] = RgbDropoutGap,
+            [DriverSettingKeys.ColorDropoutBlue] = RgbDropoutGap
         }, Protocol);
+
+    private const string RgbDropoutGap =
+        "TWAIN has no standard dropout of an arbitrary color; ICAP_FILTER only drops red, green or blue.";
 
     private static NativeSettingBinding Named(string key, int id, string name, int order,
         IReadOnlyDictionary<string, int> names) => new()

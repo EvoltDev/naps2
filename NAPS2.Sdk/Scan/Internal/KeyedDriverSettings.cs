@@ -98,7 +98,6 @@ internal static class KeyedDriverSettings
         DriverSettingKeys.ColorBalanceRed,
         DriverSettingKeys.ColorBalanceGreen,
         DriverSettingKeys.ColorBalanceBlue,
-        DriverSettingKeys.Sharpening,
         DriverSettingKeys.StreakRemoval,
         DriverSettingKeys.StreakRemovalStrength,
         DriverSettingKeys.EdgeFill,
@@ -106,8 +105,22 @@ internal static class KeyedDriverSettings
         DriverSettingKeys.BlankPageContent,
         DriverSettingKeys.FeedTimeout,
         DriverSettingKeys.FeedTimeoutResponse,
-        DriverSettingKeys.SameSettingsBothSides
+        DriverSettingKeys.SameSettingsBothSides,
+        DriverSettingKeys.BrightnessContrastMode,
+        DriverSettingKeys.ColorBalanceMode,
+        DriverSettingKeys.ForegroundBoldness,
+        DriverSettingKeys.ForegroundBoldnessStrength,
+        DriverSettingKeys.HoleFill,
+        DriverSettingKeys.DocumentProtection,
+        DriverSettingKeys.ImprovedStacking
     ];
+
+    /// <summary>
+    /// Keys a backend negotiates before its typed operations, because they decide whether a typed value takes effect:
+    /// a brightness/contrast mode other than manual makes the driver ignore the typed brightness and contrast.
+    /// </summary>
+    public static readonly HashSet<string> BeforeTypedOperationKeys =
+        new HashSet<string>(StringComparer.Ordinal) { DriverSettingKeys.BrightnessContrastMode };
 
     /// <summary>
     /// Adds the vendor-only keys to a protocol's gaps with a common reason.

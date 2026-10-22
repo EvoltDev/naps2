@@ -15,7 +15,10 @@ internal enum NativeValueType
     Int32,
     UInt32,
     Fix32,
-    UInt16Array
+    UInt16Array,
+
+    /// <summary>A vector of 32-bit integers (WIA VT_VECTOR | VT_I4).</summary>
+    Int32Array
 }
 
 /// <summary>
@@ -67,6 +70,12 @@ internal sealed record NativeSettingBinding
     public int? ValuesNativeId { get; init; }
 
     public required Func<DriverSettingValue, NativeConversion> ToNative { get; init; }
+
+    /// <summary>
+    /// Converts a requested value using what the driver reports, replacing <see cref="ToNative"/>, for a setting whose
+    /// native value is only defined relative to the driver's own range (a sensitivity scale).
+    /// </summary>
+    public Func<DriverSettingValue, NativeProbe, NativeConversion>? ToNativeForProbe { get; init; }
 
     /// <summary>
     /// Converts a native value back to the key's value, or null when it has no translation.
@@ -375,14 +384,25 @@ internal static class KeyedSettingNegotiator
         foreach (var binding in bindings)
         {
             last = binding;
-            var conversion = Convert(binding, value);
+            NativeProbe? probe = null;
+            if (binding.ToNativeForProbe != null)
+            {
+                probe = SafeProbe(access, binding);
+                if (probe.State == DriverProcessingCapabilityState.Unsupported)
+                {
+                    // Nothing to convert against; trying the candidate reports it as unsupported, not malformed.
+                    later.Add((binding, 0));
+                    continue;
+                }
+            }
+            var conversion = Convert(binding, value, probe);
             if (conversion.Error != null)
             {
                 conversionError = conversion.Error;
                 continue;
             }
 
-            var probe = SafeProbe(access, binding);
+            probe ??= SafeProbe(access, binding);
             var usable = probe.State is DriverProcessingCapabilityState.Writable or
                              DriverProcessingCapabilityState.Unknown &&
                          CheckOffered(binding, conversion.Value!, probe) == null;
@@ -553,11 +573,14 @@ internal static class KeyedSettingNegotiator
         }
     }
 
-    private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value)
+    private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value,
+        NativeProbe? probe)
     {
         try
         {
-            return binding.ToNative(value);
+            return binding.ToNativeForProbe != null && probe != null
+                ? binding.ToNativeForProbe(value, probe)
+                : binding.ToNative(value);
         }
         catch (Exception e)
         {
@@ -569,9 +592,12 @@ internal static class KeyedSettingNegotiator
     /// Rejects a value the driver does not offer, when it reports what it offers. A driver that reports nothing is
     /// left to accept or reject the write itself.
     /// </summary>
+    internal static bool IsArray(NativeValueType type) =>
+        type is NativeValueType.UInt16Array or NativeValueType.Int32Array;
+
     private static string? CheckOffered(NativeSettingBinding binding, object native, NativeProbe probe)
     {
-        if (binding.ValueType == NativeValueType.UInt16Array)
+        if (IsArray(binding.ValueType))
         {
             if (probe.Values is not { Count: > 0 })
             {
