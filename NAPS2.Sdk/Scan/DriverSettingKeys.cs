@@ -193,4 +193,24 @@ public static class DriverSettingKeys
 
     /// <summary>Boolean; adjusts the transport to improve how the output stack is arranged.</summary>
     public const string ImprovedStacking = "improvedStacking";
+
+    // The keys below name features vendor documentation describes without a native contract. They have no binding
+    // yet, so every driver reports them as unsupported with that reason.
+
+    /// <summary>Boolean; removes show-through from the reverse side.</summary>
+    public const string BleedThroughRemoval = "bleedThroughRemoval";
+
+    /// <summary>Boolean; removes the moire pattern of printed halftones.</summary>
+    public const string Descreening = "descreening";
+
+    /// <summary>Boolean; enhances barcodes in the image so they read more reliably.</summary>
+    public const string BarcodeEnhancement = "barcodeEnhancement";
+
+    /// <summary>
+    /// Text: "left,top,width,height" in percent of the page, the part of the page the scanner searches for barcodes.
+    /// </summary>
+    public const string BarcodeSearchRegion = "barcodeSearchRegion";
+
+    /// <summary>Boolean; stops the feed when a staple or other metal is detected.</summary>
+    public const string StapleProtection = "stapleProtection";
 }

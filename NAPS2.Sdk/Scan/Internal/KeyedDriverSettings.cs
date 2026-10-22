@@ -123,6 +123,19 @@ internal static class KeyedDriverSettings
         new HashSet<string>(StringComparer.Ordinal) { DriverSettingKeys.BrightnessContrastMode };
 
     /// <summary>
+    /// Keys for features vendor documentation describes without a native contract (capability ids, property ids or
+    /// SDK members the selected backend can call). No binding is guessed for them.
+    /// </summary>
+    public static readonly IReadOnlyList<string> UndocumentedBindingKeys =
+    [
+        DriverSettingKeys.BleedThroughRemoval,
+        DriverSettingKeys.Descreening,
+        DriverSettingKeys.BarcodeEnhancement,
+        DriverSettingKeys.BarcodeSearchRegion,
+        DriverSettingKeys.StapleProtection
+    ];
+
+    /// <summary>
     /// Adds the vendor-only keys to a protocol's gaps with a common reason.
     /// </summary>
     public static IReadOnlyDictionary<string, string> WithVendorOnlyGaps(Dictionary<string, string> gaps,
@@ -132,6 +145,11 @@ internal static class KeyedDriverSettings
         {
             gaps.Add(key, $"No standard {protocol} binding exists; this setting needs a verified vendor binding for " +
                           "the connected device.");
+        }
+        foreach (var key in UndocumentedBindingKeys)
+        {
+            gaps.Add(key, "Scanner vendors describe this feature, but no native binding for it is documented, so no " +
+                          "scanner can be asked for it yet.");
         }
         return gaps;
     }
