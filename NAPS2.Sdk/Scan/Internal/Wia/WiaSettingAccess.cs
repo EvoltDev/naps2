@@ -72,7 +72,7 @@ internal sealed class WiaSettingAccess : IDriverSettingAccess
         };
         if (attributes.Flags.HasFlag(WiaPropertyFlags.Range))
         {
-            return probe with { Minimum = attributes.Min, Maximum = attributes.Max };
+            return probe with { Minimum = attributes.Min, Maximum = attributes.Max, Step = attributes.Step };
         }
         if (attributes.Flags.HasFlag(WiaPropertyFlags.List))
         {

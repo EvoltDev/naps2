@@ -101,8 +101,9 @@ internal static class NativeSettingConversions
 
     /// <summary>
     /// Named levels spread evenly over the scale the driver reports: the first name is the lowest value it offers, the
-    /// last the highest, and any between are equally spaced (rounded). A driver that lists its values instead of a
-    /// range is mapped onto the sorted list the same way. Read back, the value is the native integer.
+    /// last the highest, and any between are equally spaced, on the nearest value the range's increment allows. A
+    /// driver that lists its values instead of a range is mapped onto the sorted list the same way. Read back, the value
+    /// is the native integer.
     /// </summary>
     public static Func<DriverSettingValue, NativeProbe, NativeConversion> NamedLevelsInRange(
         IReadOnlyList<string> levels) => (value, probe) =>
@@ -128,8 +129,10 @@ internal static class NativeSettingConversions
         }
         var minimum = KeyedSettingNegotiator.ToLong(probe.Minimum);
         var maximum = KeyedSettingNegotiator.ToLong(probe.Maximum);
-        return NativeConversion.Ok((int) Math.Round(minimum + fraction * (maximum - minimum),
-            MidpointRounding.AwayFromZero));
+        var step = probe.Step == null ? 1 : Math.Max(1, KeyedSettingNegotiator.ToLong(probe.Step));
+        var steps = (maximum - minimum) / step;
+        var level = minimum + step * (long) Math.Round(fraction * steps, MidpointRounding.AwayFromZero);
+        return NativeConversion.Ok((int) level);
     };
 
     /// <summary>

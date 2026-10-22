@@ -23,6 +23,71 @@ public class WiaSettingBindingsTests
         Assert.Equal(DriverProcessingStatus.Applied, result.Status);
     }
 
+    [Theory]
+    [InlineData("low", 0)]
+    [InlineData("medium", 60)]
+    [InlineData("high", 100)]
+    public void MultifeedSensitivityLevelsLandOnTheRangesIncrement(string level, int expected)
+    {
+        var access = new StepAccess(0, 100, 20);
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText(level)))));
+
+        Assert.Equal(expected, access.Values["WIA_IPS_MULTI_FEED_SENSITIVITY"]);
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+    }
+
+    [Fact]
+    public void ASensitivityExposedByAnEarlierSettingIsPlacedOnTheRangeItThenReports()
+    {
+        // The sensitivity only appears once detection is configured, which happens first.
+        FakeAccess access = null!;
+        access = new FakeAccess
+        {
+            States = { ["WIA_IPS_MULTI_FEED_SENSITIVITY"] = DriverProcessingCapabilityState.Unsupported },
+            AfterWrite = (name, _) =>
+            {
+                if (name == "WIA_IPS_MULTI_FEED_DETECT_METHOD")
+                {
+                    access.States.Remove("WIA_IPS_MULTI_FEED_SENSITIVITY");
+                    access.Ranges["WIA_IPS_MULTI_FEED_SENSITIVITY"] = (0, 100);
+                }
+            }
+        };
+
+        var results = Apply(access, Options(
+            (DriverSettingKeys.MultifeedMethod, DriverSettingValue.FromText("length")),
+            (DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText("high"))));
+
+        Assert.Equal(100, access.Values["WIA_IPS_MULTI_FEED_SENSITIVITY"]);
+        Assert.All(results, x => Assert.Equal(DriverProcessingStatus.Applied, x.Status));
+    }
+
+    [Fact]
+    public void ASensitivityIsPlacedOnTheRangeReportedWhenItIsWritten()
+    {
+        // An earlier setting narrows the scale after the requests were ranked.
+        FakeAccess access = null!;
+        access = new FakeAccess
+        {
+            Ranges = { ["WIA_IPS_MULTI_FEED_SENSITIVITY"] = (0, 100) },
+            AfterWrite = (name, _) =>
+            {
+                if (name == "WIA_IPS_MULTI_FEED_DETECT_METHOD")
+                {
+                    access.Ranges["WIA_IPS_MULTI_FEED_SENSITIVITY"] = (1, 5);
+                }
+            }
+        };
+
+        Apply(access, Options(
+            (DriverSettingKeys.MultifeedMethod, DriverSettingValue.FromText("length")),
+            (DriverSettingKeys.MultifeedSensitivity, DriverSettingValue.FromText("high"))));
+
+        Assert.Equal(5, access.Values["WIA_IPS_MULTI_FEED_SENSITIVITY"]);
+    }
+
     [Fact]
     public void MultifeedSensitivityLevelsArePlacedOnAListedScale()
     {
@@ -100,7 +165,27 @@ public class WiaSettingBindingsTests
         Assert.Equal(DriverProcessingStatus.Rejected, result.Status);
     }
 
-    private static List<DriverProcessingSetting> Apply(FakeAccess access, DriverProcessingOptions options) =>
+    /// <summary>Reports the sensitivity as a range with an increment, as a WIA driver does.</summary>
+    private sealed class StepAccess(int minimum, int maximum, int step) : IDriverSettingAccess
+    {
+        private readonly FakeAccess _inner = new();
+
+        public Dictionary<string, object> Values => _inner.Values;
+
+        public NativeProbe Probe(NativeSettingBinding binding) => _inner.Probe(binding) with
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            Step = step
+        };
+
+        public NativeWriteResult Write(NativeSettingBinding binding, object nativeValue) =>
+            _inner.Write(binding, nativeValue);
+
+        public object? Read(NativeSettingBinding binding) => _inner.Read(binding);
+    }
+
+    private static List<DriverProcessingSetting> Apply(IDriverSettingAccess access, DriverProcessingOptions options) =>
         KeyedSettingNegotiator.Apply(access, "WIA",
                 KeyedSettingNegotiator.Candidates(WiaSettingBindings.Bindings, [], null), WiaSettingBindings.Gaps,
                 options)

@@ -124,6 +124,9 @@ internal sealed record NativeProbe
 
     public object? Maximum { get; init; }
 
+    /// <summary>The increment between allowed values of a range, when the driver reports one.</summary>
+    public object? Step { get; init; }
+
     public string? Message { get; init; }
 }
 
@@ -225,10 +228,11 @@ internal static class KeyedSettingNegotiator
             var applied = false;
             foreach (var (binding, native) in ranked)
             {
-                var failure = TryCandidate(access, binding, native, unrestored, out var writeStatus);
+                var failure = TryCandidate(access, binding, native, unrestored, out var writeStatus,
+                    out var writtenNative);
                 if (failure == null)
                 {
-                    written.Add((keyed, binding, native, writeStatus));
+                    written.Add((keyed, binding, writtenNative!, writeStatus));
                     applied = true;
                     break;
                 }
@@ -379,37 +383,43 @@ internal static class KeyedSettingNegotiator
     {
         conversionError = null;
         last = null;
-        var usableNow = new List<(NativeSettingBinding, object)>();
+        var usable = new List<(NativeSettingBinding, object)>();
         var later = new List<(NativeSettingBinding, object)>();
         foreach (var binding in bindings)
         {
             last = binding;
-            NativeProbe? probe = null;
             if (binding.ToNativeForProbe != null)
             {
-                probe = SafeProbe(access, binding);
-                if (probe.State == DriverProcessingCapabilityState.Unsupported)
-                {
-                    // Nothing to convert against; trying the candidate reports it as unsupported, not malformed.
-                    later.Add((binding, 0));
-                    continue;
-                }
+                // The value depends on what the driver offers once the earlier settings and this binding's
+                // prerequisites are written, so it is converted then. The probe here only ranks the candidate.
+                var current = SafeProbe(access, binding);
+                var deferred = new DeferredConversion(value);
+                NativeConversion? converted = current.State == DriverProcessingCapabilityState.Unsupported
+                    ? null
+                    : Convert(binding, value, current);
+                var usableNow = converted is { Error: null } &&
+                                current.State is DriverProcessingCapabilityState.Writable or
+                                    DriverProcessingCapabilityState.Unknown &&
+                                CheckOffered(binding, converted.Value.Value!, current) == null;
+                (usableNow ? usable : later).Add((binding, deferred));
+                continue;
             }
-            var conversion = Convert(binding, value, probe);
+
+            var conversion = Convert(binding, value, null);
             if (conversion.Error != null)
             {
                 conversionError = conversion.Error;
                 continue;
             }
 
-            probe ??= SafeProbe(access, binding);
-            var usable = probe.State is DriverProcessingCapabilityState.Writable or
-                             DriverProcessingCapabilityState.Unknown &&
-                         CheckOffered(binding, conversion.Value!, probe) == null;
-            (usable ? usableNow : later).Add((binding, conversion.Value!));
+            var probe = SafeProbe(access, binding);
+            var offeredNow = probe.State is DriverProcessingCapabilityState.Writable or
+                                 DriverProcessingCapabilityState.Unknown &&
+                             CheckOffered(binding, conversion.Value!, probe) == null;
+            (offeredNow ? usable : later).Add((binding, conversion.Value!));
         }
-        usableNow.AddRange(later);
-        return usableNow;
+        usable.AddRange(later);
+        return usable;
     }
 
     /// <summary>
@@ -419,9 +429,10 @@ internal static class KeyedSettingNegotiator
     /// final.
     /// </summary>
     private static CandidateFailure? TryCandidate(IDriverSettingAccess access, NativeSettingBinding binding,
-        object native, ICollection<string>? unrestored, out NativeWriteStatus writeStatus)
+        object native, ICollection<string>? unrestored, out NativeWriteStatus writeStatus, out object? writtenNative)
     {
         writeStatus = default;
+        writtenNative = null;
         var changed = new List<ChangedPrerequisite>();
 
         CandidateFailure Unsuccessful(DriverProcessingStatus status, string? message)
@@ -452,6 +463,16 @@ internal static class KeyedSettingNegotiator
                     probe.Message ?? "The driver could not be queried for this setting.");
         }
 
+        if (native is DeferredConversion deferred)
+        {
+            var conversion = Convert(binding, deferred.Value, probe);
+            if (conversion.Error != null)
+            {
+                return Unsuccessful(DriverProcessingStatus.Rejected, conversion.Error);
+            }
+            native = conversion.Value!;
+        }
+
         var offered = CheckOffered(binding, native, probe);
         if (offered != null)
         {
@@ -460,6 +481,7 @@ internal static class KeyedSettingNegotiator
 
         var write = SafeWrite(access, binding, native);
         writeStatus = write.Status;
+        writtenNative = native;
         return write.Status switch
         {
             NativeWriteStatus.Accepted or NativeWriteStatus.AcceptedWithChange => null,
@@ -470,6 +492,12 @@ internal static class KeyedSettingNegotiator
     }
 
     private sealed record ChangedPrerequisite(NativeSettingBinding Binding, object? Original);
+
+    /// <summary>
+    /// A requested value whose native form depends on the driver's state when it is written
+    /// (<see cref="NativeSettingBinding.ToNativeForProbe"/>).
+    /// </summary>
+    private sealed record DeferredConversion(DriverSettingValue Value);
 
     /// <summary>
     /// Writes a binding's prerequisites and records in <paramref name="changed"/> each one it changed, with the value
