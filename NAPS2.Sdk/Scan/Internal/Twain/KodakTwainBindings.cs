@@ -26,6 +26,7 @@ internal static class KodakTwainBindings
     private const int CapTransportTimeout = 0x8003;
     private const int ICapCroppingMode = 0x8022;
     private const int CapUltrasonicSensitivity = 0x8027;
+    private const int CapEasyStacking = 0x8075;
     private const int CapTransportTimeoutResponse = 0x8028;
     private const int ICapAutoColorAmount = 0x8092;
     private const int ICapAutoColorContent = 0x8093;
@@ -48,7 +49,12 @@ internal static class KodakTwainBindings
     private const int ICapStreakRemovalEnabled = 0x80C6;
     private const int ICapStreakRemovalAggressiveness = 0x80C7;
     private const int ICapColorSharpen = 0x8102;
+    private const int ICapHoleFillEnabled = 0x8104;
+    private const int ICapColorBrightnessMode = 0x8108;
     private const int ICapColorBalanceMode = 0x8109;
+    private const int CapIntelligentDocumentProtection = 0x810D;
+    private const int ICapForegroundBoldnessAggressiveness = 0x810E;
+    private const int ICapForegroundBoldnessMode = 0x810F;
 
     // TWDT_*
     internal static readonly IReadOnlyDictionary<string, int> DocumentTypes = new Dictionary<string, int>
@@ -143,6 +149,43 @@ internal static class KodakTwainBindings
         ["high"] = 3
     };
 
+    // TWCBR_*. The header's notes call the automatic mode TWCBR_AUTOMATIC, but it only defines TWCBR_AUTOMATICBASIC.
+    internal static readonly IReadOnlyDictionary<string, int> BrightnessContrastModes = new Dictionary<string, int>
+    {
+        ["none"] = 0,
+        ["manual"] = 1,
+        ["automatic"] = 2
+    };
+
+    // TWCBM_*
+    internal static readonly IReadOnlyDictionary<string, int> ColorBalanceModes = new Dictionary<string, int>
+    {
+        ["none"] = 0,
+        ["manual"] = 1,
+        ["automaticBasic"] = 2,
+        ["automatic"] = 3
+    };
+
+    // TWFB_*
+    internal static readonly IReadOnlyDictionary<string, int> ForegroundBoldnessModes = new Dictionary<string, int>
+    {
+        ["none"] = 0,
+        ["automaticBasic"] = 1,
+        ["automatic"] = 2
+    };
+
+    // TWFB_AUTOMATIC; the aggressiveness only has meaning in this mode.
+    private const int ForegroundBoldnessAutomatic = 2;
+
+    // TWIDP_*
+    internal static readonly IReadOnlyDictionary<string, int> DocumentProtections = new Dictionary<string, int>
+    {
+        ["none"] = 0,
+        ["minimum"] = 1,
+        ["normal"] = 2,
+        ["maximum"] = 3
+    };
+
     // TWBM_CONTENT; CAP_BLANKPAGECONTENT is only valid in this mode.
     private const int BlankPageModeContent = 2;
 
@@ -155,6 +198,9 @@ internal static class KodakTwainBindings
         Matches = identity => identity.Manufacturer?.IndexOf("Kodak", StringComparison.OrdinalIgnoreCase) >= 0,
         Bindings =
         [
+            // Negotiated before the typed brightness and contrast, which only take effect in manual mode.
+            new(Named(DriverSettingKeys.BrightnessContrastMode, ICapColorBrightnessMode, "ICAP_COLORBRIGHTNESSMODE", 50,
+                BrightnessContrastModes)),
             new(Named(DriverSettingKeys.DocumentType, ICapDocumentType, "ICAP_DOCUMENTTYPE", 90, DocumentTypes)),
             new(Named(DriverSettingKeys.MediaType, ICapMediaType, "ICAP_MEDIATYPE", 95, MediaTypes)),
             new(Named(DriverSettingKeys.CroppingMode, ICapCroppingMode, "ICAP_CROPPINGMODE", 98, CroppingModes)),
@@ -172,6 +218,9 @@ internal static class KodakTwainBindings
                 "ICAP_BACKGROUNDADJUSTAPPLYTO", 171, BackgroundTargets)),
             new(Integer(DriverSettingKeys.BackgroundSmoothingStrength, ICapBackgroundAdjustAggressiveness,
                 "ICAP_BACKGROUNDADJUSTAGGRESSIVENESS", 172, -10, 10)),
+            // Before the manual balance values, whose optional prerequisite selects manual mode itself.
+            new(Named(DriverSettingKeys.ColorBalanceMode, ICapColorBalanceMode, "ICAP_COLORBALANCEMODE", 179,
+                ColorBalanceModes)),
             new(ColorBalance(DriverSettingKeys.ColorBalanceRed, ICapColorBalanceRed, "ICAP_COLORBALANCERED", 180)),
             new(ColorBalance(DriverSettingKeys.ColorBalanceGreen, ICapColorBalanceGreen, "ICAP_COLORBALANCEGREEN",
                 181)),
@@ -183,6 +232,13 @@ internal static class KodakTwainBindings
             new(Integer(DriverSettingKeys.StreakRemovalStrength, ICapStreakRemovalAggressiveness,
                 "ICAP_STREAKREMOVALAGGRESSIVENESS", 191, -2, 2,
                 Requires(ICapStreakRemovalEnabled, "ICAP_STREAKREMOVALENABLED", NativeValueType.Boolean, true))),
+            new(Named(DriverSettingKeys.ForegroundBoldness, ICapForegroundBoldnessMode, "ICAP_FOREGROUNDBOLDNESSMODE",
+                192, ForegroundBoldnessModes)),
+            new(Integer(DriverSettingKeys.ForegroundBoldnessStrength, ICapForegroundBoldnessAggressiveness,
+                "ICAP_FOREGROUNDBOLDNESSAGGRESSIVENESS", 193, -10, 10,
+                Requires(ICapForegroundBoldnessMode, "ICAP_FOREGROUNDBOLDNESSMODE", NativeValueType.UInt16,
+                    ForegroundBoldnessAutomatic))),
+            new(Boolean(DriverSettingKeys.HoleFill, ICapHoleFillEnabled, "ICAP_HOLEFILLENABLED", 194)),
             new(Named(DriverSettingKeys.EdgeFill, ICapImageEdgeFill, "ICAP_IMAGEEDGEFILL", 195, EdgeFills)),
             new(EdgeFillWidth()),
             // Documented as TW_UINT32; the i4250 with driver 16.4 reports TWTY_INT32 with the same 0-100 range.
@@ -191,9 +247,12 @@ internal static class KodakTwainBindings
                 NativeValueType.UInt32) with { AlternativeTypes = [NativeValueType.Int32] }),
             new(Named(DriverSettingKeys.MultifeedSensitivity, CapUltrasonicSensitivity, "CAP_ULTRASONICSENSITIVITY",
                 320, UltrasonicSensitivities)),
+            new(Named(DriverSettingKeys.DocumentProtection, CapIntelligentDocumentProtection,
+                "CAP_INTELLIGENTDOCUMENTPROTECTION", 345, DocumentProtections)),
             new(Integer(DriverSettingKeys.FeedTimeout, CapTransportTimeout, "CAP_TRANSPORTTIMEOUT", 350, 0, 300)),
             new(Named(DriverSettingKeys.FeedTimeoutResponse, CapTransportTimeoutResponse,
                 "CAP_TRANSPORTTIMEOUTRESPONSE", 351, TimeoutResponses)),
+            new(Boolean(DriverSettingKeys.ImprovedStacking, CapEasyStacking, "CAP_EASYSTACKING", 360)),
             // FALSE copies the front settings to the rear, so it runs after every other per-camera setting.
             new(new NativeSettingBinding
             {

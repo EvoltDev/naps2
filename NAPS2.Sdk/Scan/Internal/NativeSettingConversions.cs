@@ -5,7 +5,7 @@ namespace NAPS2.Scan.Internal;
 /// <summary>
 /// Value conversions shared by the TWAIN and WIA setting bindings. Native values are normalized: booleans as
 /// <see cref="bool"/>, FIX32 as <see cref="double"/>, integers as <see cref="int"/>, arrays as <c>object[]</c> of
-/// <see cref="ushort"/>.
+/// <see cref="ushort"/> (TWAIN) or <see cref="int"/> (WIA vectors).
 /// </summary>
 internal static class NativeSettingConversions
 {
@@ -100,10 +100,46 @@ internal static class NativeSettingConversions
     }
 
     /// <summary>
+    /// Named levels spread evenly over the scale the driver reports: the first name is the lowest value it offers, the
+    /// last the highest, and any between are equally spaced, on the nearest value the range's increment allows. A
+    /// driver that lists its values instead of a range is mapped onto the sorted list the same way. Read back, the value
+    /// is the native integer.
+    /// </summary>
+    public static Func<DriverSettingValue, NativeProbe, NativeConversion> NamedLevelsInRange(
+        IReadOnlyList<string> levels) => (value, probe) =>
+    {
+        if (value is not { Kind: DriverSettingValueKind.Text, TextValue: { } text })
+        {
+            return NativeConversion.Fail("A text value is required.");
+        }
+        var index = levels.ToList().IndexOf(text.Trim());
+        if (index < 0)
+        {
+            return NativeConversion.Fail($"'{text}' is not one of: {string.Join(", ", levels)}.");
+        }
+        var fraction = levels.Count == 1 ? 1d : (double) index / (levels.Count - 1);
+        if (probe.Values is { Count: > 0 } listed)
+        {
+            var sorted = listed.Select(KeyedSettingNegotiator.ToLong).Distinct().OrderBy(x => x).ToList();
+            return NativeConversion.Ok((int) sorted[(int) Math.Round(fraction * (sorted.Count - 1))]);
+        }
+        if (probe.Minimum == null || probe.Maximum == null)
+        {
+            return NativeConversion.Fail("The driver reports no range to place the level on.");
+        }
+        var minimum = KeyedSettingNegotiator.ToLong(probe.Minimum);
+        var maximum = KeyedSettingNegotiator.ToLong(probe.Maximum);
+        var step = probe.Step == null ? 1 : Math.Max(1, KeyedSettingNegotiator.ToLong(probe.Step));
+        var steps = (maximum - minimum) / step;
+        var level = minimum + step * (long) Math.Round(fraction * steps, MidpointRounding.AwayFromZero);
+        return NativeConversion.Ok((int) level);
+    };
+
+    /// <summary>
     /// A comma-separated list of names written as an ordered native array.
     /// </summary>
     public static Func<DriverSettingValue, NativeConversion> NamedListToNative(
-        IReadOnlyDictionary<string, int> names) => value =>
+        IReadOnlyDictionary<string, int> names, bool int32 = false) => value =>
     {
         if (value is not { Kind: DriverSettingValueKind.Text, TextValue: { } text })
         {
@@ -124,7 +160,9 @@ internal static class NativeSettingConversions
         {
             return NativeConversion.Fail("A value is listed more than once.");
         }
-        return NativeConversion.Ok(items.Select(x => (object) (ushort) names[x]).ToArray());
+        return NativeConversion.Ok(int32
+            ? items.Select(x => (object) names[x]).ToArray()
+            : items.Select(x => (object) (ushort) names[x]).ToArray());
     };
 
     /// <summary>

@@ -4,7 +4,7 @@ namespace NAPS2.Scan.Internal.Wia;
 
 /// <summary>
 /// Standard WIA property bindings for <see cref="DriverSettingKeys"/>. Ids and constants are from the Windows SDK
-/// header WiaDef.h. Every bound property is a VT_I4.
+/// header WiaDef.h. Every bound property is a VT_I4, except the barcode type vectors (VT_VECTOR | VT_I4).
 /// </summary>
 internal static class WiaSettingBindings
 {
@@ -15,8 +15,14 @@ internal static class WiaSettingBindings
     private const int IpsBarcodeReader = 4150; // WIA_IPS_BARCODE_READER
     private const int IpsMaximumBarcodesPerPage = 4151; // WIA_IPS_MAXIMUM_BARCODES_PER_PAGE
     private const int IpsBarcodeSearchDirection = 4152; // WIA_IPS_BARCODE_SEARCH_DIRECTION
+    private const int IpsSupportedBarcodeTypes = 4155; // WIA_IPS_SUPPORTED_BARCODE_TYPES
+    private const int IpsEnabledBarcodeTypes = 4156; // WIA_IPS_ENABLED_BARCODE_TYPES
     private const int IpsLongDocument = 4166; // WIA_IPS_LONG_DOCUMENT
     private const int IpsMultiFeed = 4168; // WIA_IPS_MULTI_FEED
+    private const int IpsMultiFeedSensitivity = 4169; // WIA_IPS_MULTI_FEED_SENSITIVITY
+    private const int IpsColorDropRed = 4177; // WIA_IPS_COLOR_DROP_RED
+    private const int IpsColorDropGreen = 4178; // WIA_IPS_COLOR_DROP_GREEN
+    private const int IpsColorDropBlue = 4179; // WIA_IPS_COLOR_DROP_BLUE
     private const int IpsMultiFeedDetectMethod = 4193; // WIA_IPS_MULTI_FEED_DETECT_METHOD
 
     // WIA_BARCODE_READER_DISABLED and WIA_BARCODE_READER_AUTO. The flatbed/feeder-only values are not requested.
@@ -27,7 +33,7 @@ internal static class WiaSettingBindings
     private const int LongDocumentEnabled = 1;
     private const int LongDocumentDisabled = 0;
 
-    // WIA_COLOR_DROP_*. WIA_COLOR_DROP_RGB needs the separate RGB properties and is not offered.
+    // WIA_COLOR_DROP_*. WIA_COLOR_DROP_RGB is selected by the RGB component settings instead.
     internal static readonly IReadOnlyDictionary<string, int> DropoutColors = new Dictionary<string, int>
     {
         ["none"] = 0,
@@ -35,6 +41,33 @@ internal static class WiaSettingBindings
         ["green"] = 2,
         ["blue"] = 3
     };
+
+    // WIA_COLOR_DROP_RGB: drop the color given by WIA_IPS_COLOR_DROP_RED, _GREEN and _BLUE.
+    private const int ColorDropRgb = 4;
+
+    // WIA_BARCODE_*. The identifiers differ from TWAIN's TWBT_* (QR is 41 here, 20 there). POSTNET has four WIA
+    // variants (A, B, C, DPBC) and no single equivalent, so it is not offered.
+    internal static readonly IReadOnlyDictionary<string, int> BarcodeTypes = new Dictionary<string, int>
+    {
+        ["upca"] = 0,
+        ["upce"] = 1,
+        ["codabar"] = 2,
+        ["nonInterleaved2of5"] = 3,
+        ["interleaved2of5"] = 4,
+        ["code39"] = 5,
+        ["code39FullAscii"] = 7,
+        ["code93"] = 8,
+        ["code128"] = 9,
+        ["gs1128"] = 13,
+        ["ean8"] = 16,
+        ["ean13"] = 17,
+        ["maxicode"] = 27,
+        ["pdf417"] = 28,
+        ["qr"] = 41
+    };
+
+    // WIA_IPS_MULTI_FEED_SENSITIVITY is a driver-defined scale, so the portable levels are placed on its range.
+    private static readonly string[] MultiFeedSensitivityLevels = ["low", "medium", "high"];
 
     // WIA_BARCODE_*_SEARCH
     internal static readonly IReadOnlyDictionary<string, int> BarcodeSearchDirections = new Dictionary<string, int>
@@ -65,8 +98,23 @@ internal static class WiaSettingBindings
     {
         Integer(DriverSettingKeys.Threshold, IpsThreshold, "WIA_IPS_THRESHOLD", 110, 0, 255),
         Named(DriverSettingKeys.ColorDropout, IpsColorDrop, "WIA_IPS_COLOR_DROP", 150, DropoutColors),
+        ColorDropComponent(DriverSettingKeys.ColorDropoutRed, IpsColorDropRed, "WIA_IPS_COLOR_DROP_RED", 151),
+        ColorDropComponent(DriverSettingKeys.ColorDropoutGreen, IpsColorDropGreen, "WIA_IPS_COLOR_DROP_GREEN", 152),
+        ColorDropComponent(DriverSettingKeys.ColorDropoutBlue, IpsColorDropBlue, "WIA_IPS_COLOR_DROP_BLUE", 153),
         Boolean(DriverSettingKeys.BarcodeDetection, IpsBarcodeReader, "WIA_IPS_BARCODE_READER", 200,
             BarcodeReaderAuto, BarcodeReaderDisabled),
+        new NativeSettingBinding
+        {
+            Key = DriverSettingKeys.BarcodeTypes,
+            Protocol = Protocol,
+            NativeId = IpsEnabledBarcodeTypes,
+            NativeName = "WIA_IPS_ENABLED_BARCODE_TYPES",
+            ValueType = NativeValueType.Int32Array,
+            Order = 210,
+            ValuesNativeId = IpsSupportedBarcodeTypes,
+            ToNative = NamedListToNative(BarcodeTypes, int32: true),
+            FromNative = NamedListFromNative(BarcodeTypes)
+        },
         Named(DriverSettingKeys.BarcodeSearchDirection, IpsBarcodeSearchDirection,
             "WIA_IPS_BARCODE_SEARCH_DIRECTION", 220, BarcodeSearchDirections),
         Integer(DriverSettingKeys.BarcodeMaximumCount, IpsMaximumBarcodesPerPage,
@@ -75,6 +123,18 @@ internal static class WiaSettingBindings
             LongDocumentDisabled),
         Named(DriverSettingKeys.MultifeedMethod, IpsMultiFeedDetectMethod, "WIA_IPS_MULTI_FEED_DETECT_METHOD", 310,
             MultiFeedMethods),
+        new NativeSettingBinding
+        {
+            Key = DriverSettingKeys.MultifeedSensitivity,
+            Protocol = Protocol,
+            NativeId = IpsMultiFeedSensitivity,
+            NativeName = "WIA_IPS_MULTI_FEED_SENSITIVITY",
+            ValueType = NativeValueType.Int32,
+            Order = 320,
+            ToNative = _ => NativeConversion.Fail("The sensitivity is placed on the driver's own range."),
+            ToNativeForProbe = NamedLevelsInRange(MultiFeedSensitivityLevels),
+            FromNative = IntegerFromNative
+        },
         Named(DriverSettingKeys.MultifeedResponse, IpsMultiFeed, "WIA_IPS_MULTI_FEED", 330, MultiFeedResponses)
     }.ToDictionary(x => x.Key, StringComparer.Ordinal);
 
@@ -89,10 +149,7 @@ internal static class WiaSettingBindings
             "WIA only produces a fixed threshold; an adaptive threshold has no standard property.",
         [DriverSettingKeys.ImageFilter] = "WIA defines no standard image filter property.",
         [DriverSettingKeys.NoiseFilter] = "WIA defines no standard noise filter property.",
-        [DriverSettingKeys.BarcodeTypes] =
-            "WIA_IPS_ENABLED_BARCODE_TYPES is a vector property the WIA wrapper cannot write.",
-        [DriverSettingKeys.MultifeedSensitivity] =
-            "WIA_IPS_MULTI_FEED_SENSITIVITY is a numeric scale with no defined low, medium or high values.",
+        [DriverSettingKeys.Sharpening] = "WIA defines no standard sharpening property.",
         [DriverSettingKeys.PaperHandling] = "WIA defines no standard paper handling property."
     }, Protocol);
 
@@ -108,6 +165,25 @@ internal static class WiaSettingBindings
         ToNative = NamedToNative(names),
         FromNative = NamedFromNative(names)
     };
+
+    /// <summary>One component of a dropped RGB color; WIA_IPS_COLOR_DROP must be WIA_COLOR_DROP_RGB first.</summary>
+    private static NativeSettingBinding ColorDropComponent(string key, int id, string name, int order) =>
+        Integer(key, id, name, order, 0, 255) with
+        {
+            Prerequisites =
+            [
+                new NativePrerequisite(new NativeSettingBinding
+                {
+                    Key = "WIA_IPS_COLOR_DROP",
+                    Protocol = Protocol,
+                    NativeId = IpsColorDrop,
+                    NativeName = "WIA_IPS_COLOR_DROP",
+                    ValueType = NativeValueType.Int32,
+                    ToNative = _ => NativeConversion.Ok(ColorDropRgb),
+                    FromNative = _ => null
+                }, ColorDropRgb)
+            ]
+        };
 
     private static NativeSettingBinding Integer(string key, int id, string name, int order, int minimum,
         int maximum) => new()

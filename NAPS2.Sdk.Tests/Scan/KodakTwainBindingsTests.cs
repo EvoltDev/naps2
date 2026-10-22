@@ -60,6 +60,13 @@ public class KodakTwainBindingsTests
     [InlineData(DriverSettingKeys.MultifeedSensitivity, 0x8027)]
     [InlineData(DriverSettingKeys.SameSettingsBothSides, 0x80B7)]
     [InlineData(DriverSettingKeys.BlankPageContent, 0x80C4)]
+    [InlineData(DriverSettingKeys.BrightnessContrastMode, 0x8108)]
+    [InlineData(DriverSettingKeys.ColorBalanceMode, 0x8109)]
+    [InlineData(DriverSettingKeys.ForegroundBoldness, 0x810F)]
+    [InlineData(DriverSettingKeys.ForegroundBoldnessStrength, 0x810E)]
+    [InlineData(DriverSettingKeys.HoleFill, 0x8104)]
+    [InlineData(DriverSettingKeys.DocumentProtection, 0x810D)]
+    [InlineData(DriverSettingKeys.ImprovedStacking, 0x8075)]
     public void KodakIdsMatchTheHeader(string key, int id)
     {
         Assert.Equal(id, KodakTwainBindings.Set.Bindings.Single(x => x.Binding.Key == key).Binding.NativeId);
@@ -78,6 +85,65 @@ public class KodakTwainBindingsTests
         Assert.Equal(DriverProcessingStatus.Applied, result.Status);
         Assert.Equal("Kodak Alaris kdscust.h", result.Evidence);
         Assert.Equal(DriverExecutionLocation.Unknown, result.ExecutionLocation);
+    }
+
+    [Fact]
+    public void ForegroundBoldnessStrengthSelectsTheAutomaticModeFirst()
+    {
+        var access = new FakeAccess();
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.ForegroundBoldnessStrength, DriverSettingValue.FromInteger(-4)))));
+
+        Assert.Equal(["ICAP_FOREGROUNDBOLDNESSMODE", "ICAP_FOREGROUNDBOLDNESSAGGRESSIVENESS"], access.Writes);
+        Assert.Equal(2, access.Values["ICAP_FOREGROUNDBOLDNESSMODE"]);
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+    }
+
+    [Theory]
+    [InlineData(DriverSettingKeys.BrightnessContrastMode, "automatic", "ICAP_COLORBRIGHTNESSMODE", 2)]
+    [InlineData(DriverSettingKeys.BrightnessContrastMode, "manual", "ICAP_COLORBRIGHTNESSMODE", 1)]
+    [InlineData(DriverSettingKeys.ColorBalanceMode, "automatic", "ICAP_COLORBALANCEMODE", 3)]
+    [InlineData(DriverSettingKeys.ColorBalanceMode, "automaticBasic", "ICAP_COLORBALANCEMODE", 2)]
+    [InlineData(DriverSettingKeys.ForegroundBoldness, "automaticBasic", "ICAP_FOREGROUNDBOLDNESSMODE", 1)]
+    [InlineData(DriverSettingKeys.DocumentProtection, "maximum", "CAP_INTELLIGENTDOCUMENTPROTECTION", 3)]
+    public void KodakModesUseTheHeaderConstants(string key, string value, string native, int expected)
+    {
+        var access = new FakeAccess();
+
+        var result = Assert.Single(Apply(access, Options((key, DriverSettingValue.FromText(value)))));
+
+        Assert.Equal(expected, access.Values[native]);
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+    }
+
+    [Theory]
+    [InlineData(DriverSettingKeys.HoleFill, "ICAP_HOLEFILLENABLED")]
+    [InlineData(DriverSettingKeys.ImprovedStacking, "CAP_EASYSTACKING")]
+    public void KodakSwitchesWriteBooleans(string key, string native)
+    {
+        var access = new FakeAccess();
+
+        Apply(access, Options((key, DriverSettingValue.FromBoolean(true))));
+
+        Assert.Equal(true, access.Values[native]);
+    }
+
+    [Fact]
+    public void StandardSharpeningIsAHighPassFilterAndStrongerLevelsUseTheKodakCapability()
+    {
+        var normal = new FakeAccess();
+        var high = new FakeAccess();
+
+        var normalResult = Assert.Single(Apply(normal,
+            Options((DriverSettingKeys.Sharpening, DriverSettingValue.FromText("normal")))));
+        Apply(high, Options((DriverSettingKeys.Sharpening, DriverSettingValue.FromText("high"))));
+
+        Assert.Equal(["ICAP_IMAGEFILTER"], normal.Writes);
+        Assert.Equal(4, normal.Values["ICAP_IMAGEFILTER"]);
+        Assert.Equal(DriverProcessingStatus.Applied, normalResult.Status);
+        Assert.Equal(["ICAP_COLORSHARPEN"], high.Writes);
+        Assert.Equal(3, high.Values["ICAP_COLORSHARPEN"]);
     }
 
     [Fact]

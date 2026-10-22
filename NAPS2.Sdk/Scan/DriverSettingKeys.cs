@@ -33,13 +33,25 @@ public static class DriverSettingKeys
     /// </summary>
     public const string ColorDropout = "colorDropout";
 
+    /// <summary>
+    /// Integer 0 to 255, the red component of a dropped color. WIA_IPS_COLOR_DROP_RED with WIA_IPS_COLOR_DROP set to
+    /// WIA_COLOR_DROP_RGB. TWAIN has no standard equivalent.
+    /// </summary>
+    public const string ColorDropoutRed = "colorDropoutRed";
+
+    /// <summary>Integer 0 to 255; see <see cref="ColorDropoutRed"/>. WIA_IPS_COLOR_DROP_GREEN.</summary>
+    public const string ColorDropoutGreen = "colorDropoutGreen";
+
+    /// <summary>Integer 0 to 255; see <see cref="ColorDropoutRed"/>. WIA_IPS_COLOR_DROP_BLUE.</summary>
+    public const string ColorDropoutBlue = "colorDropoutBlue";
+
     /// <summary>Boolean. TWAIN ICAP_BARCODEDETECTIONENABLED, WIA_IPS_BARCODE_READER.</summary>
     public const string BarcodeDetection = "barcodeDetection";
 
     /// <summary>
     /// Text: a comma-separated list in priority order of "qr", "code128", "gs1128", "pdf417", "code39",
     /// "code39FullAscii", "code93", "interleaved2of5", "nonInterleaved2of5", "codabar", "ean8", "ean13", "upca",
-    /// "upce", "postnet", "maxicode". TWAIN ICAP_BARCODESEARCHPRIORITIES.
+    /// "upce", "postnet", "maxicode". TWAIN ICAP_BARCODESEARCHPRIORITIES, WIA_IPS_ENABLED_BARCODE_TYPES.
     /// </summary>
     public const string BarcodeTypes = "barcodeTypes";
 
@@ -65,7 +77,8 @@ public static class DriverSettingKeys
 
     /// <summary>
     /// Text: "low", "medium", "high", or "off" (vendor only). TWAIN CAP_DOUBLEFEEDDETECTIONSENSITIVITY, or a verified
-    /// vendor ultrasonic sensitivity when the standard capability is unsupported.
+    /// vendor ultrasonic sensitivity when the standard capability is unsupported. WIA_IPS_MULTI_FEED_SENSITIVITY is a
+    /// range, so "low", "medium" and "high" are its minimum, midpoint and maximum.
     /// </summary>
     public const string MultifeedSensitivity = "multifeedSensitivity";
 
@@ -120,7 +133,10 @@ public static class DriverSettingKeys
     /// <summary>Integer -1000 to 1000, manual color balance.</summary>
     public const string ColorBalanceBlue = "colorBalanceBlue";
 
-    /// <summary>Text: "none", "normal", "more", "high".</summary>
+    /// <summary>
+    /// Text: "none", "normal", "more", "high". TWAIN ICAP_IMAGEFILTER carries "none" (TWIF_NONE) and "normal"
+    /// (TWIF_HIGHPASS); the stronger levels need a vendor binding.
+    /// </summary>
     public const string Sharpening = "sharpening";
 
     /// <summary>Boolean.</summary>
@@ -149,4 +165,52 @@ public static class DriverSettingKeys
 
     /// <summary>Boolean; true applies the front settings to the rear.</summary>
     public const string SameSettingsBothSides = "sameSettingsBothSides";
+
+    /// <summary>
+    /// Text: "none", "manual", "automatic". How brightness and contrast are adjusted together: "manual" makes the
+    /// driver use the requested brightness and contrast, "automatic" lets it choose both. Applied before the typed
+    /// brightness and contrast.
+    /// </summary>
+    public const string BrightnessContrastMode = "brightnessContrastMode";
+
+    /// <summary>
+    /// Text: "none", "manual", "automaticBasic", "automatic". The color balance method; the manual balance values
+    /// select "manual" themselves.
+    /// </summary>
+    public const string ColorBalanceMode = "colorBalanceMode";
+
+    /// <summary>Text: "none", "automaticBasic", "automatic".</summary>
+    public const string ForegroundBoldness = "foregroundBoldness";
+
+    /// <summary>Integer -10 to 10; selects the "automatic" foreground boldness.</summary>
+    public const string ForegroundBoldnessStrength = "foregroundBoldnessStrength";
+
+    /// <summary>Boolean; fills punched holes.</summary>
+    public const string HoleFill = "holeFill";
+
+    /// <summary>Text: "none", "minimum", "normal", "maximum". Feeder document protection.</summary>
+    public const string DocumentProtection = "documentProtection";
+
+    /// <summary>Boolean; adjusts the transport to improve how the output stack is arranged.</summary>
+    public const string ImprovedStacking = "improvedStacking";
+
+    // The keys below name features vendor documentation describes without a native contract. They have no binding
+    // yet, so every driver reports them as unsupported with that reason.
+
+    /// <summary>Boolean; removes show-through from the reverse side.</summary>
+    public const string BleedThroughRemoval = "bleedThroughRemoval";
+
+    /// <summary>Boolean; removes the moire pattern of printed halftones.</summary>
+    public const string Descreening = "descreening";
+
+    /// <summary>Boolean; enhances barcodes in the image so they read more reliably.</summary>
+    public const string BarcodeEnhancement = "barcodeEnhancement";
+
+    /// <summary>
+    /// Text: "left,top,width,height" in percent of the page, the part of the page the scanner searches for barcodes.
+    /// </summary>
+    public const string BarcodeSearchRegion = "barcodeSearchRegion";
+
+    /// <summary>Boolean; stops the feed when a staple or other metal is detected.</summary>
+    public const string StapleProtection = "stapleProtection";
 }

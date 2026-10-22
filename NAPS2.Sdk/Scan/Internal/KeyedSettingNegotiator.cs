@@ -15,7 +15,10 @@ internal enum NativeValueType
     Int32,
     UInt32,
     Fix32,
-    UInt16Array
+    UInt16Array,
+
+    /// <summary>A vector of 32-bit integers (WIA VT_VECTOR | VT_I4).</summary>
+    Int32Array
 }
 
 /// <summary>
@@ -69,6 +72,12 @@ internal sealed record NativeSettingBinding
     public required Func<DriverSettingValue, NativeConversion> ToNative { get; init; }
 
     /// <summary>
+    /// Converts a requested value using what the driver reports, replacing <see cref="ToNative"/>, for a setting whose
+    /// native value is only defined relative to the driver's own range (a sensitivity scale).
+    /// </summary>
+    public Func<DriverSettingValue, NativeProbe, NativeConversion>? ToNativeForProbe { get; init; }
+
+    /// <summary>
     /// Converts a native value back to the key's value, or null when it has no translation.
     /// </summary>
     public required Func<object, DriverSettingValue?> FromNative { get; init; }
@@ -114,6 +123,9 @@ internal sealed record NativeProbe
     public object? Minimum { get; init; }
 
     public object? Maximum { get; init; }
+
+    /// <summary>The increment between allowed values of a range, when the driver reports one.</summary>
+    public object? Step { get; init; }
 
     public string? Message { get; init; }
 }
@@ -216,10 +228,11 @@ internal static class KeyedSettingNegotiator
             var applied = false;
             foreach (var (binding, native) in ranked)
             {
-                var failure = TryCandidate(access, binding, native, unrestored, out var writeStatus);
+                var failure = TryCandidate(access, binding, native, unrestored, out var writeStatus,
+                    out var writtenNative);
                 if (failure == null)
                 {
-                    written.Add((keyed, binding, native, writeStatus));
+                    written.Add((keyed, binding, writtenNative!, writeStatus));
                     applied = true;
                     break;
                 }
@@ -370,12 +383,29 @@ internal static class KeyedSettingNegotiator
     {
         conversionError = null;
         last = null;
-        var usableNow = new List<(NativeSettingBinding, object)>();
+        var usable = new List<(NativeSettingBinding, object)>();
         var later = new List<(NativeSettingBinding, object)>();
         foreach (var binding in bindings)
         {
             last = binding;
-            var conversion = Convert(binding, value);
+            if (binding.ToNativeForProbe != null)
+            {
+                // The value depends on what the driver offers once the earlier settings and this binding's
+                // prerequisites are written, so it is converted then. The probe here only ranks the candidate.
+                var current = SafeProbe(access, binding);
+                var deferred = new DeferredConversion(value);
+                NativeConversion? converted = current.State == DriverProcessingCapabilityState.Unsupported
+                    ? null
+                    : Convert(binding, value, current);
+                var usableNow = converted is { Error: null } &&
+                                current.State is DriverProcessingCapabilityState.Writable or
+                                    DriverProcessingCapabilityState.Unknown &&
+                                CheckOffered(binding, converted.Value.Value!, current) == null;
+                (usableNow ? usable : later).Add((binding, deferred));
+                continue;
+            }
+
+            var conversion = Convert(binding, value, null);
             if (conversion.Error != null)
             {
                 conversionError = conversion.Error;
@@ -383,13 +413,13 @@ internal static class KeyedSettingNegotiator
             }
 
             var probe = SafeProbe(access, binding);
-            var usable = probe.State is DriverProcessingCapabilityState.Writable or
-                             DriverProcessingCapabilityState.Unknown &&
-                         CheckOffered(binding, conversion.Value!, probe) == null;
-            (usable ? usableNow : later).Add((binding, conversion.Value!));
+            var offeredNow = probe.State is DriverProcessingCapabilityState.Writable or
+                                 DriverProcessingCapabilityState.Unknown &&
+                             CheckOffered(binding, conversion.Value!, probe) == null;
+            (offeredNow ? usable : later).Add((binding, conversion.Value!));
         }
-        usableNow.AddRange(later);
-        return usableNow;
+        usable.AddRange(later);
+        return usable;
     }
 
     /// <summary>
@@ -399,9 +429,10 @@ internal static class KeyedSettingNegotiator
     /// final.
     /// </summary>
     private static CandidateFailure? TryCandidate(IDriverSettingAccess access, NativeSettingBinding binding,
-        object native, ICollection<string>? unrestored, out NativeWriteStatus writeStatus)
+        object native, ICollection<string>? unrestored, out NativeWriteStatus writeStatus, out object? writtenNative)
     {
         writeStatus = default;
+        writtenNative = null;
         var changed = new List<ChangedPrerequisite>();
 
         CandidateFailure Unsuccessful(DriverProcessingStatus status, string? message)
@@ -432,6 +463,16 @@ internal static class KeyedSettingNegotiator
                     probe.Message ?? "The driver could not be queried for this setting.");
         }
 
+        if (native is DeferredConversion deferred)
+        {
+            var conversion = Convert(binding, deferred.Value, probe);
+            if (conversion.Error != null)
+            {
+                return Unsuccessful(DriverProcessingStatus.Rejected, conversion.Error);
+            }
+            native = conversion.Value!;
+        }
+
         var offered = CheckOffered(binding, native, probe);
         if (offered != null)
         {
@@ -440,6 +481,7 @@ internal static class KeyedSettingNegotiator
 
         var write = SafeWrite(access, binding, native);
         writeStatus = write.Status;
+        writtenNative = native;
         return write.Status switch
         {
             NativeWriteStatus.Accepted or NativeWriteStatus.AcceptedWithChange => null,
@@ -450,6 +492,12 @@ internal static class KeyedSettingNegotiator
     }
 
     private sealed record ChangedPrerequisite(NativeSettingBinding Binding, object? Original);
+
+    /// <summary>
+    /// A requested value whose native form depends on the driver's state when it is written
+    /// (<see cref="NativeSettingBinding.ToNativeForProbe"/>).
+    /// </summary>
+    private sealed record DeferredConversion(DriverSettingValue Value);
 
     /// <summary>
     /// Writes a binding's prerequisites and records in <paramref name="changed"/> each one it changed, with the value
@@ -553,11 +601,14 @@ internal static class KeyedSettingNegotiator
         }
     }
 
-    private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value)
+    private static NativeConversion Convert(NativeSettingBinding binding, DriverSettingValue value,
+        NativeProbe? probe)
     {
         try
         {
-            return binding.ToNative(value);
+            return binding.ToNativeForProbe != null && probe != null
+                ? binding.ToNativeForProbe(value, probe)
+                : binding.ToNative(value);
         }
         catch (Exception e)
         {
@@ -569,9 +620,12 @@ internal static class KeyedSettingNegotiator
     /// Rejects a value the driver does not offer, when it reports what it offers. A driver that reports nothing is
     /// left to accept or reject the write itself.
     /// </summary>
+    internal static bool IsArray(NativeValueType type) =>
+        type is NativeValueType.UInt16Array or NativeValueType.Int32Array;
+
     private static string? CheckOffered(NativeSettingBinding binding, object native, NativeProbe probe)
     {
-        if (binding.ValueType == NativeValueType.UInt16Array)
+        if (IsArray(binding.ValueType))
         {
             if (probe.Values is not { Count: > 0 })
             {

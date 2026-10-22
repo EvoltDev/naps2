@@ -98,7 +98,6 @@ internal static class KeyedDriverSettings
         DriverSettingKeys.ColorBalanceRed,
         DriverSettingKeys.ColorBalanceGreen,
         DriverSettingKeys.ColorBalanceBlue,
-        DriverSettingKeys.Sharpening,
         DriverSettingKeys.StreakRemoval,
         DriverSettingKeys.StreakRemovalStrength,
         DriverSettingKeys.EdgeFill,
@@ -106,7 +105,34 @@ internal static class KeyedDriverSettings
         DriverSettingKeys.BlankPageContent,
         DriverSettingKeys.FeedTimeout,
         DriverSettingKeys.FeedTimeoutResponse,
-        DriverSettingKeys.SameSettingsBothSides
+        DriverSettingKeys.SameSettingsBothSides,
+        DriverSettingKeys.BrightnessContrastMode,
+        DriverSettingKeys.ColorBalanceMode,
+        DriverSettingKeys.ForegroundBoldness,
+        DriverSettingKeys.ForegroundBoldnessStrength,
+        DriverSettingKeys.HoleFill,
+        DriverSettingKeys.DocumentProtection,
+        DriverSettingKeys.ImprovedStacking
+    ];
+
+    /// <summary>
+    /// Keys a backend negotiates before its typed operations, because they decide whether a typed value takes effect:
+    /// a brightness/contrast mode other than manual makes the driver ignore the typed brightness and contrast.
+    /// </summary>
+    public static readonly HashSet<string> BeforeTypedOperationKeys =
+        new HashSet<string>(StringComparer.Ordinal) { DriverSettingKeys.BrightnessContrastMode };
+
+    /// <summary>
+    /// Keys for features vendor documentation describes without a native contract (capability ids, property ids or
+    /// SDK members the selected backend can call). No binding is guessed for them.
+    /// </summary>
+    public static readonly IReadOnlyList<string> UndocumentedBindingKeys =
+    [
+        DriverSettingKeys.BleedThroughRemoval,
+        DriverSettingKeys.Descreening,
+        DriverSettingKeys.BarcodeEnhancement,
+        DriverSettingKeys.BarcodeSearchRegion,
+        DriverSettingKeys.StapleProtection
     ];
 
     /// <summary>
@@ -119,6 +145,11 @@ internal static class KeyedDriverSettings
         {
             gaps.Add(key, $"No standard {protocol} binding exists; this setting needs a verified vendor binding for " +
                           "the connected device.");
+        }
+        foreach (var key in UndocumentedBindingKeys)
+        {
+            gaps.Add(key, "Scanner vendors describe this feature, but no native binding for it is documented, so no " +
+                          "scanner can be asked for it yet.");
         }
         return gaps;
     }
