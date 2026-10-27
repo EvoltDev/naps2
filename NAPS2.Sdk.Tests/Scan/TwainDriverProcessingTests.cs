@@ -60,6 +60,31 @@ public class TwainDriverProcessingTests
     }
 
     [Fact]
+    public void ADryRunThatCannotSelectTheTransferMechanismDoesNotSucceed()
+    {
+        var accepted = new DriverProcessingResult
+        {
+            Settings =
+            [
+                new DriverProcessingSetting
+                {
+                    Name = DriverSettingKeys.TransferCompression,
+                    Status = DriverProcessingStatus.Applied,
+                    RequestedValue = "none"
+                }
+            ]
+        };
+
+        var result = LocalTwainController.WithTransferFailure(accepted,
+            "The TWAIN source does not support raw memory transfer mode.");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("raw memory transfer mode", result.FailureReason);
+        Assert.Single(result.Settings);
+        Assert.Same(accepted, LocalTwainController.WithTransferFailure(accepted, null));
+    }
+
+    [Fact]
     public void ADuplicateRequestCannotStandInForARejectedCompression()
     {
         var keyed = new List<DriverSettingRequest>

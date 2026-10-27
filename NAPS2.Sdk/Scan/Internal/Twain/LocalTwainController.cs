@@ -296,6 +296,7 @@ internal class LocalTwainController : ITwainController
     {
         var raw = options.ProbeRawAcquisition;
         bool decodesCompressedTransfers;
+        string? transferFailure = null;
         try
         {
             var mode = TwainScanRunner.ConfigureTransferMechanism(source, options.TwainOptions.TransferMode, raw,
@@ -304,12 +305,32 @@ internal class LocalTwainController : ITwainController
         }
         catch (Exception ex)
         {
-            // The scan itself would stop here; the dry run still reports the other settings, and no compressed
-            // transfer it could not decode.
+            // The scan itself would stop here. The dry run still reports the other settings, and no compressed
+            // transfer it could not decode, but it must not succeed.
             _logger.LogDebug(ex, "TWAIN dry run could not select the transfer mechanism");
             decodesCompressedTransfers = false;
+            transferFailure = ex.Message;
         }
-        return TwainScanRunner.ApplyImageConfiguration(source, options, _logger, decodesCompressedTransfers);
+        return WithTransferFailure(
+            TwainScanRunner.ApplyImageConfiguration(source, options, _logger, decodesCompressedTransfers),
+            transferFailure);
+    }
+
+    /// <summary>
+    /// Records that the scan could not select its transfer mechanism, ahead of any failure the configuration itself
+    /// reported, so the dry run does not succeed for a scan that would stop before acquiring.
+    /// </summary>
+    internal static DriverProcessingResult WithTransferFailure(DriverProcessingResult result, string? transferFailure)
+    {
+        if (transferFailure == null)
+        {
+            return result;
+        }
+        var reason = $"The scan cannot select its TWAIN transfer mechanism: {transferFailure}";
+        return result with
+        {
+            FailureReason = string.IsNullOrEmpty(result.FailureReason) ? reason : $"{reason} {result.FailureReason}"
+        };
     }
 }
 #endif
