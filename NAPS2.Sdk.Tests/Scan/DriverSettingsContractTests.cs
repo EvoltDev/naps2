@@ -214,7 +214,7 @@ public class DriverSettingsContractTests
     [Fact]
     public void DryRunRequestAndResultRoundTrip()
     {
-        var options = new ScanOptions { ProbeDriverProcessing = true };
+        var options = new ScanOptions { ProbeDriverProcessing = true, ProbeRawAcquisition = true };
         var caps = new ScanCaps
         {
             DriverProcessingProbe = new DriverProcessingResult
@@ -240,6 +240,7 @@ public class DriverSettingsContractTests
             new XmlSerializer<ScanCaps>().SerializeToXDocument(caps))!;
 
         Assert.True(optionsCopy.ProbeDriverProcessing);
+        Assert.True(optionsCopy.ProbeRawAcquisition);
         var setting = Assert.Single(capsCopy.DriverProcessingProbe!.Settings);
         Assert.Equal("edgeFill", setting.Name);
         Assert.Equal("Kodak Alaris kdscust.h", setting.Evidence);

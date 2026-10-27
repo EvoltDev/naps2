@@ -95,6 +95,12 @@ public class ScanOptions
     public bool ProbeDriverProcessing { get; set; }
 
     /// <summary>
+    /// With <see cref="ProbeDriverProcessing"/>, judge the dry run for a raw acquisition (<c>ScanRaw</c>) rather than
+    /// a processed scan. The two decode different transfers: only a raw memory transfer takes a compressed image.
+    /// </summary>
+    public bool ProbeRawAcquisition { get; set; }
+
+    /// <summary>
     /// Options for detecting barcodes during the scan.
     /// </summary>
     public BarcodeDetectionOptions BarcodeDetectionOptions { get; set; } = new();

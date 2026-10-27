@@ -7,6 +7,61 @@ namespace NAPS2.Sdk.Tests.Scan;
 
 public class TwainDriverProcessingTests
 {
+    [Theory]
+    [InlineData(true, TwainTransferMode.Memory, true)]
+    [InlineData(true, TwainTransferMode.Native, false)]
+    [InlineData(false, TwainTransferMode.Memory, false)]
+    [InlineData(false, TwainTransferMode.Native, false)]
+    public void OnlyARawMemoryTransferDecodesCompression(bool raw, TwainTransferMode mode, bool expected)
+    {
+        Assert.Equal(expected, TwainScanRunner.DecodesCompressedTransfers(raw, mode));
+    }
+
+    [Theory]
+    [InlineData("jpeg")]
+    [InlineData("group4")]
+    public void AnUndecodableCompressionIsRejectedBeforeItReachesTheSource(string compression)
+    {
+        var gamma = Request(DriverSettingKeys.Gamma, DriverSettingValue.FromReal(2.2));
+        var quality = Request(DriverSettingKeys.TransferJpegQuality, DriverSettingValue.FromInteger(80));
+        var keyed = new List<DriverSettingRequest>
+        {
+            gamma, Request(DriverSettingKeys.TransferCompression, DriverSettingValue.FromText(compression)), quality
+        };
+        var requested = new Dictionary<string, object?>();
+        var settings = new List<DriverProcessingSetting>();
+        var rejected = new List<string>();
+
+        var remaining = TwainDriverProcessing.WithoutUndecodableCompression(keyed, requested, settings, rejected);
+
+        Assert.Equal([gamma, quality], remaining);
+        var setting = Assert.Single(settings);
+        Assert.Equal(DriverSettingKeys.TransferCompression, setting.Name);
+        Assert.Equal(DriverProcessingStatus.Rejected, setting.Status);
+        Assert.Equal(compression, setting.RequestedValue);
+        Assert.Equal([DriverSettingKeys.TransferCompression], rejected);
+        Assert.Equal(compression, requested[DriverSettingKeys.TransferCompression]);
+    }
+
+    [Fact]
+    public void AnUncompressedTransferIsAlwaysNegotiated()
+    {
+        var keyed = new List<DriverSettingRequest>
+        {
+            Request(DriverSettingKeys.TransferCompression, DriverSettingValue.FromText("none"))
+        };
+        var settings = new List<DriverProcessingSetting>();
+
+        var remaining = TwainDriverProcessing.WithoutUndecodableCompression(keyed,
+            new Dictionary<string, object?>(), settings, new List<string>());
+
+        Assert.Same(keyed, remaining);
+        Assert.Empty(settings);
+    }
+
+    private static DriverSettingRequest Request(string key, DriverSettingValue value) =>
+        new() { Key = key, Value = value };
+
     [Fact]
     public void NativeUiRequestsAreReportedAsNeutralized()
     {
