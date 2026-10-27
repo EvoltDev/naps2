@@ -111,6 +111,7 @@ internal static class KeyedDriverSettings
         DriverSettingKeys.ForegroundBoldness,
         DriverSettingKeys.ForegroundBoldnessStrength,
         DriverSettingKeys.HoleFill,
+        DriverSettingKeys.BarcodeEnhancement,
         DriverSettingKeys.DocumentProtection,
         DriverSettingKeys.ImprovedStacking
     ];
@@ -130,7 +131,6 @@ internal static class KeyedDriverSettings
     [
         DriverSettingKeys.BleedThroughRemoval,
         DriverSettingKeys.Descreening,
-        DriverSettingKeys.BarcodeEnhancement,
         DriverSettingKeys.BarcodeSearchRegion,
         DriverSettingKeys.StapleProtection
     ];

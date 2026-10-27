@@ -55,6 +55,8 @@ internal static class KodakTwainBindings
     private const int CapIntelligentDocumentProtection = 0x810D;
     private const int ICapForegroundBoldnessAggressiveness = 0x810E;
     private const int ICapForegroundBoldnessMode = 0x810F;
+    // Defined in the Integration Guide v4.0 copy of kdscust.h; older copies of the header stop before it.
+    private const int ICapBarcodeEnhancement = 0x811F;
 
     // TWDT_*
     internal static readonly IReadOnlyDictionary<string, int> DocumentTypes = new Dictionary<string, int>
@@ -241,6 +243,9 @@ internal static class KodakTwainBindings
             new(Boolean(DriverSettingKeys.HoleFill, ICapHoleFillEnabled, "ICAP_HOLEFILLENABLED", 194)),
             new(Named(DriverSettingKeys.EdgeFill, ICapImageEdgeFill, "ICAP_IMAGEEDGEFILL", 195, EdgeFills)),
             new(EdgeFillWidth()),
+            // Barcode cleanup for readability. Unlike the barcode count and search area, the header does not tie it to
+            // ICAP_BARCODEDETECTIONENABLED, so it has no prerequisite.
+            new(Boolean(DriverSettingKeys.BarcodeEnhancement, ICapBarcodeEnhancement, "ICAP_BARCODEENHANCEMENT", 205)),
             // Documented as TW_UINT32; the i4250 with driver 16.4 reports TWTY_INT32 with the same 0-100 range.
             new(Integer(DriverSettingKeys.BlankPageContent, CapBlankPageContent, "CAP_BLANKPAGECONTENT", 240, 0, 100,
                 Requires(CapBlankPageMode, "CAP_BLANKPAGEMODE", NativeValueType.UInt16, BlankPageModeContent),

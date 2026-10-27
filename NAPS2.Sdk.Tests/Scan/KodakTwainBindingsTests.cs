@@ -67,6 +67,7 @@ public class KodakTwainBindingsTests
     [InlineData(DriverSettingKeys.HoleFill, 0x8104)]
     [InlineData(DriverSettingKeys.DocumentProtection, 0x810D)]
     [InlineData(DriverSettingKeys.ImprovedStacking, 0x8075)]
+    [InlineData(DriverSettingKeys.BarcodeEnhancement, 0x811F)]
     public void KodakIdsMatchTheHeader(string key, int id)
     {
         Assert.Equal(id, KodakTwainBindings.Set.Bindings.Single(x => x.Binding.Key == key).Binding.NativeId);
@@ -242,6 +243,33 @@ public class KodakTwainBindingsTests
         var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "TWAIN",
             Candidates(new DriverDeviceIdentity { Manufacturer = "Canon" }), TwainSettingBindings.Gaps,
             Options((DriverSettingKeys.DocumentType, DriverSettingValue.FromText("text")))));
+
+        Assert.Equal(DriverProcessingStatus.Unsupported, result.Status);
+        Assert.Contains("verified vendor binding", result.Message);
+        Assert.Empty(access.Writes);
+    }
+
+    [Fact]
+    public void BarcodeEnhancementIsWrittenWithoutTurningOnBarcodeDetection()
+    {
+        var access = new FakeAccess();
+
+        var result = Assert.Single(Apply(access,
+            Options((DriverSettingKeys.BarcodeEnhancement, DriverSettingValue.FromBoolean(true)))));
+
+        Assert.Equal(["ICAP_BARCODEENHANCEMENT"], access.Writes);
+        Assert.True(Assert.IsType<bool>(access.Values["ICAP_BARCODEENHANCEMENT"]));
+        Assert.Equal(DriverProcessingStatus.Applied, result.Status);
+    }
+
+    [Fact]
+    public void BarcodeEnhancementOnOtherSourcesNeedsAVendorBinding()
+    {
+        var access = new FakeAccess();
+
+        var result = Assert.Single(KeyedSettingNegotiator.Apply(access, "TWAIN",
+            Candidates(new DriverDeviceIdentity { Manufacturer = "Canon" }), TwainSettingBindings.Gaps,
+            Options((DriverSettingKeys.BarcodeEnhancement, DriverSettingValue.FromBoolean(true)))));
 
         Assert.Equal(DriverProcessingStatus.Unsupported, result.Status);
         Assert.Contains("verified vendor binding", result.Message);
