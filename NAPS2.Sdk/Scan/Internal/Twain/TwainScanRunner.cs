@@ -352,73 +352,8 @@ internal class TwainScanRunner
 
     private void ConfigureSource(DataSource source)
     {
-        // Transfer Mode
-        var rawDefaultTransferMode = _rawOptions != null &&
-                                     _options.TwainOptions.TransferMode == TwainTransferMode.Default;
-        if (_rawOptions != null && _options.TwainOptions.TransferMode == TwainTransferMode.Memory &&
-            !TwainRawScanSink.HasTransferCompletionFlag)
-        {
-            throw new TwainRawTransferCompletionUnavailableException(
-                "The loaded NAPS2.NTwain assembly does not expose DataTransferredEventArgs.IsTransferComplete; raw memory-strip acquisition cannot safely determine completion.");
-        }
-        if (_rawOptions != null && _options.TwainOptions.TransferMode == TwainTransferMode.Default)
-        {
-            // The EVOSCAN NTwain package exposes the actual XFERDONE result on the final memory strip. Prefer memory
-            // because it is bounded by the raw writer, and use native only when the source cannot negotiate memory.
-            _options.TwainOptions.TransferMode = TwainRawScanSink.HasTransferCompletionFlag &&
-                                                  SupportsTransferMechanism(source, XferMech.Memory)
-                ? TwainTransferMode.Memory
-                : TwainTransferMode.Native;
-        }
-        if (_options.TwainOptions.TransferMode == TwainTransferMode.Default)
-        {
-            if (source.Manufacturer.Contains("Kyocera", StringComparison.InvariantCultureIgnoreCase) &&
-                (source.ProductFamily.Contains("Ecosys", StringComparison.InvariantCultureIgnoreCase) ||
-                 source.Name.Contains("Ecosys", StringComparison.InvariantCultureIgnoreCase)))
-            {
-                _logger.LogDebug("Detected Kyocera Ecosys scanner. Defaulting to Native transfer mode.");
-                _options.TwainOptions.TransferMode = TwainTransferMode.Native;
-            }
-            else
-            {
-                _logger.LogDebug("Defaulting to Memory transfer mode.");
-                _options.TwainOptions.TransferMode = TwainTransferMode.Memory;
-            }
-        }
-        if (_options.TwainOptions.TransferMode == TwainTransferMode.Memory)
-        {
-            _logger.LogDebug("Transfer mode: Memory");
-            if (_rawOptions != null)
-            {
-                if (!TrySetTransferMechanism(source, XferMech.Memory))
-                {
-                    if (!rawDefaultTransferMode)
-                    {
-                        throw new DeviceException("The TWAIN source does not support raw memory transfer mode.");
-                    }
-
-                    // A source can advertise CAP_XFERMECH but reject SET for the active camera or paper source.
-                    // Native transfer remains a complete-image fallback in that case.
-                    _logger.LogDebug("TWAIN source rejected memory transfer mode; falling back to native transfer");
-                    _options.TwainOptions.TransferMode = TwainTransferMode.Native;
-                    TrySetTransferMechanism(source, XferMech.Native);
-                }
-            }
-            else
-            {
-                source.Capabilities.ICapXferMech.SetValue(XferMech.Memory);
-            }
-        }
-        else
-        {
-            _logger.LogDebug("Transfer mode: Native");
-            if (_rawOptions != null)
-            {
-                // The processed path relies on the source default for native transfers. Raw acquisition makes it
-                // explicit so a source cannot silently return memory strips without a completion signal.
-                TrySetTransferMechanism(source, XferMech.Native);
-            }
-        }
+        _options.TwainOptions.TransferMode = ConfigureTransferMechanism(source,
+            _options.TwainOptions.TransferMode, _rawOptions != null, _logger);
 
         if (_options.UseNativeUI)
         {
@@ -434,7 +369,8 @@ internal class TwainScanRunner
         }
 
         var unrestored = new List<string>();
-        var processingResult = ApplyImageConfiguration(source, _options, _logger, unrestored);
+        var processingResult = ApplyImageConfiguration(source, _options, _logger,
+            DecodesCompressedTransfers(_rawOptions != null, _options.TwainOptions.TransferMode), unrestored);
         if (_rawScanSink != null)
         {
             _rawScanSink.ConfigurationApplied(processingResult);
@@ -464,7 +400,107 @@ internal class TwainScanRunner
         };
     }
 
-    private bool SupportsTransferMechanism(DataSource source, XferMech transferMechanism)
+    /// <summary>
+    /// Only a raw memory transfer decodes JPEG and Group 4 strips (<see cref="TwainRawScanSink"/>). A processed scan
+    /// reads every memory strip as pixel rows, and a native transfer is always an uncompressed bitmap.
+    /// </summary>
+    internal static bool DecodesCompressedTransfers(bool raw, TwainTransferMode mode) =>
+        raw && mode == TwainTransferMode.Memory;
+
+    /// <summary>
+    /// Selects the transfer mechanism of a scan on an opened source and returns the mode in effect. Shared by
+    /// acquisition and the capability dry run, because the mechanism constrains settings negotiated after it: a
+    /// native transfer is always an uncompressed bitmap.
+    /// </summary>
+    internal static TwainTransferMode ConfigureTransferMechanism(DataSource source, TwainTransferMode requested,
+        bool raw, ILogger logger)
+    {
+        var mode = ResolveTransferMode(source, requested, raw, logger);
+        if (mode == TwainTransferMode.Memory)
+        {
+            logger.LogDebug("Transfer mode: Memory");
+            return SetMemoryTransfer(source, raw, rawDefaultTransferMode: raw && requested == TwainTransferMode.Default,
+                logger);
+        }
+
+        logger.LogDebug("Transfer mode: Native");
+        if (raw)
+        {
+            // The processed path relies on the source default for native transfers. Raw acquisition makes it
+            // explicit so a source cannot silently return memory strips without a completion signal.
+            TrySetTransferMechanism(source, logger, XferMech.Native);
+        }
+        return TwainTransferMode.Native;
+    }
+
+    /// <summary>
+    /// Decides the transfer mode a scan asks for, replacing <see cref="TwainTransferMode.Default"/> with memory or
+    /// native. Nothing is set on the source yet.
+    /// </summary>
+    private static TwainTransferMode ResolveTransferMode(DataSource source, TwainTransferMode requested, bool raw,
+        ILogger logger)
+    {
+        if (raw && requested == TwainTransferMode.Memory && !TwainRawScanSink.HasTransferCompletionFlag)
+        {
+            throw new TwainRawTransferCompletionUnavailableException(
+                "The loaded NAPS2.NTwain assembly does not expose DataTransferredEventArgs.IsTransferComplete; raw memory-strip acquisition cannot safely determine completion.");
+        }
+        if (requested != TwainTransferMode.Default)
+        {
+            return requested;
+        }
+        if (raw)
+        {
+            // The EVOSCAN NTwain package exposes the actual XFERDONE result on the final memory strip. Prefer memory
+            // because it is bounded by the raw writer, and use native only when the source cannot negotiate memory.
+            return TwainRawScanSink.HasTransferCompletionFlag &&
+                   SupportsTransferMechanism(source, logger, XferMech.Memory)
+                ? TwainTransferMode.Memory
+                : TwainTransferMode.Native;
+        }
+        if (IsKyoceraEcosys(source))
+        {
+            logger.LogDebug("Detected Kyocera Ecosys scanner. Defaulting to Native transfer mode.");
+            return TwainTransferMode.Native;
+        }
+        logger.LogDebug("Defaulting to Memory transfer mode.");
+        return TwainTransferMode.Memory;
+    }
+
+    private static bool IsKyoceraEcosys(DataSource source) =>
+        source.Manufacturer.Contains("Kyocera", StringComparison.InvariantCultureIgnoreCase) &&
+        (source.ProductFamily.Contains("Ecosys", StringComparison.InvariantCultureIgnoreCase) ||
+         source.Name.Contains("Ecosys", StringComparison.InvariantCultureIgnoreCase));
+
+    /// <summary>
+    /// Sets memory transfer on the source and returns the mode in effect. A raw scan that chose memory itself falls
+    /// back to native when the source rejects it; one that asked for memory explicitly fails.
+    /// </summary>
+    private static TwainTransferMode SetMemoryTransfer(DataSource source, bool raw, bool rawDefaultTransferMode,
+        ILogger logger)
+    {
+        if (!raw)
+        {
+            source.Capabilities.ICapXferMech.SetValue(XferMech.Memory);
+            return TwainTransferMode.Memory;
+        }
+        if (TrySetTransferMechanism(source, logger, XferMech.Memory))
+        {
+            return TwainTransferMode.Memory;
+        }
+        if (!rawDefaultTransferMode)
+        {
+            throw new DeviceException("The TWAIN source does not support raw memory transfer mode.");
+        }
+
+        // A source can advertise CAP_XFERMECH but reject SET for the active camera or paper source.
+        // Native transfer remains a complete-image fallback in that case.
+        logger.LogDebug("TWAIN source rejected memory transfer mode; falling back to native transfer");
+        TrySetTransferMechanism(source, logger, XferMech.Native);
+        return TwainTransferMode.Native;
+    }
+
+    private static bool SupportsTransferMechanism(DataSource source, ILogger logger, XferMech transferMechanism)
     {
         try
         {
@@ -477,20 +513,20 @@ internal class TwainScanRunner
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "TWAIN transfer mechanism query failed for {TransferMechanism}",
+            logger.LogDebug(ex, "TWAIN transfer mechanism query failed for {TransferMechanism}",
                 transferMechanism);
             return false;
         }
     }
 
-    private bool TrySetTransferMechanism(DataSource source, XferMech transferMechanism)
+    private static bool TrySetTransferMechanism(DataSource source, ILogger logger, XferMech transferMechanism)
     {
         try
         {
             var capability = source.Capabilities.ICapXferMech;
             if (!capability.IsSupported || !capability.CanSet || capability.IsReadOnly)
             {
-                _logger.LogDebug("TWAIN source cannot set {TransferMechanism} transfer mode", transferMechanism);
+                logger.LogDebug("TWAIN source cannot set {TransferMechanism} transfer mode", transferMechanism);
                 return false;
             }
             var returnCode = capability.SetValue(transferMechanism);
@@ -505,13 +541,13 @@ internal class TwainScanRunner
                 // authoritative check for this negotiation step.
                 return true;
             }
-            _logger.LogDebug("TWAIN source rejected {TransferMechanism} transfer mode with {ReturnCode}",
+            logger.LogDebug("TWAIN source rejected {TransferMechanism} transfer mode with {ReturnCode}",
                 transferMechanism, returnCode);
             return false;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "TWAIN transfer mechanism set failed for {TransferMechanism}", transferMechanism);
+            logger.LogDebug(ex, "TWAIN transfer mechanism set failed for {TransferMechanism}", transferMechanism);
             return false;
         }
     }
@@ -521,8 +557,11 @@ internal class TwainScanRunner
     /// brightness and contrast, resolution, then driver processing. Shared by acquisition and by the capability
     /// dry run, so a dry run negotiates exactly what a scan would.
     /// </summary>
+    /// <param name="decodesCompressedTransfers">
+    /// Whether the scan decodes a compressed transfer; see <see cref="DecodesCompressedTransfers"/>.
+    /// </param>
     internal static DriverProcessingResult ApplyImageConfiguration(DataSource source, ScanOptions options,
-        ILogger logger, ICollection<string>? unrestored = null)
+        ILogger logger, bool decodesCompressedTransfers, ICollection<string>? unrestored = null)
     {
         // Paper Source
         switch (options.PaperSource)
@@ -603,7 +642,8 @@ internal class TwainScanRunner
         SetClosest(source.Capabilities.ICapXResolution, options.Dpi);
         SetClosest(source.Capabilities.ICapYResolution, options.Dpi);
 
-        return TwainDriverProcessing.Apply(source, options.TwainOptions.ProcessingOptions, logger, unrestored);
+        return TwainDriverProcessing.Apply(source, options.TwainOptions.ProcessingOptions, logger, unrestored,
+            decodesCompressedTransfers);
     }
 
     internal static float GetHorizontalOffset(HorizontalAlign align, float pageWidth, Func<TWFix32> getPhysicalWidth)

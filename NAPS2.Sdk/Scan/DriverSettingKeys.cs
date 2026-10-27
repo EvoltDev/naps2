@@ -91,6 +91,22 @@ public static class DriverSettingKeys
     /// <summary>Text: "normal", "fragile", "thick", "trifold", "photograph". TWAIN CAP_PAPERHANDLING.</summary>
     public const string PaperHandling = "paperHandling";
 
+    /// <summary>
+    /// Text: "none", "jpeg", "group4". How the driver compresses the image it transfers, not how the page is finally
+    /// saved. TWAIN ICAP_COMPRESSION. Only a raw memory acquisition decodes a compressed transfer, so any other scan
+    /// reports "jpeg" and "group4" as rejected: a processed scan reads strips as pixel rows, and a native transfer is
+    /// always an uncompressed bitmap. JPEG needs a grayscale or color pixel type and Group 4 a black-and-white one. EVOSCAN
+    /// never uses TWAIN file transfers, so ICAP_IMAGEFILEFORMAT is not negotiated. WIA_IPA_FORMAT and
+    /// WIA_IPA_COMPRESSION are not bound yet.
+    /// </summary>
+    public const string TransferCompression = "transferCompression";
+
+    /// <summary>
+    /// Integer 0 to 100, the quality of a JPEG transfer; see <see cref="TransferCompression"/>. TWAIN
+    /// ICAP_JPEGQUALITY. WIA has no standard JPEG quality property.
+    /// </summary>
+    public const string TransferJpegQuality = "transferJpegQuality";
+
     // The keys below have no standard TWAIN or WIA binding. They are available only through verified vendor
     // bindings for a matching device.
 

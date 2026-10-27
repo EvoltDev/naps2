@@ -52,8 +52,12 @@ internal static class TwainDriverProcessing
         };
     }
 
+    /// <param name="decodesCompressedTransfers">
+    /// Whether the scan decodes a JPEG or Group 4 transfer. When it does not, a request for one is rejected without
+    /// reaching the source, because the pages would arrive as bytes nothing can read.
+    /// </param>
     public static DriverProcessingResult Apply(DataSource source, DriverProcessingOptions? options,
-        ILogger? logger = null, ICollection<string>? unrestored = null)
+        ILogger? logger = null, ICollection<string>? unrestored = null, bool decodesCompressedTransfers = false)
     {
         if (source == null) throw new ArgumentNullException(nameof(source));
         if (options == null || !options.HasRequests)
@@ -69,7 +73,10 @@ internal static class TwainDriverProcessing
         var neutralized = new List<string>();
         var failed = new List<string>();
 
-        ApplyKeyedSettings(source, KeyedSubset(options, beforeTypedOperations: true), requested, effective,
+        var keyed = decodesCompressedTransfers
+            ? options.Settings ?? []
+            : WithoutUndecodableCompression(options.Settings ?? [], requested, settings, rejected);
+        ApplyKeyedSettings(source, KeyedSubset(keyed, beforeTypedOperations: true), requested, effective,
             settings, rejected, unsupported, failed, logger, unrestored);
         ApplyNumeric(source.Capabilities.ICapBrightness, Brightness, options.Brightness, requested, effective, settings,
             rejected, unsupported, failed, logger);
@@ -93,7 +100,7 @@ internal static class TwainDriverProcessing
             failed, logger);
         ApplyBlankPage(source, options.AutomaticBlankPageDetection, requested, effective, settings, rejected,
             unsupported, failed, logger);
-        ApplyKeyedSettings(source, KeyedSubset(options, beforeTypedOperations: false), requested, effective,
+        ApplyKeyedSettings(source, KeyedSubset(keyed, beforeTypedOperations: false), requested, effective,
             settings, rejected, unsupported, failed, logger, unrestored);
 
         return new DriverProcessingResult
@@ -109,13 +116,55 @@ internal static class TwainDriverProcessing
     }
 
     /// <summary>
+    /// Rejects a JPEG or Group 4 transfer request the scan cannot decode, and returns the options without it.
+    /// </summary>
+    internal static List<DriverSettingRequest> WithoutUndecodableCompression(List<DriverSettingRequest> keyed,
+        IDictionary<string, object?> requested, ICollection<DriverProcessingSetting> settings,
+        ICollection<string> rejected)
+    {
+        // The first request for a key is the one negotiated; KeyedDriverSettings reports the others.
+        var requests = keyed.Where(IsTransferCompression).ToList();
+        if (requests.FirstOrDefault()?.Value?.ToObject() is not string compression || compression == "none")
+        {
+            return keyed;
+        }
+
+        requested[DriverSettingKeys.TransferCompression] = compression;
+        settings.Add(new DriverProcessingSetting
+        {
+            Name = DriverSettingKeys.TransferCompression,
+            Status = DriverProcessingStatus.Rejected,
+            RequestedValue = compression,
+            Message = "Only a raw memory transfer decodes a compressed image. A processed scan reads every strip " +
+                      "as pixel rows, and a native transfer is always an uncompressed bitmap."
+        });
+        rejected.Add(DriverSettingKeys.TransferCompression);
+        // Every later request goes too: left behind, the next one would become the first and be negotiated.
+        foreach (var duplicate in requests.Skip(1))
+        {
+            settings.Add(new DriverProcessingSetting
+            {
+                Name = DriverSettingKeys.TransferCompression,
+                Status = DriverProcessingStatus.Rejected,
+                RequestedValue = duplicate?.Value?.ToObject(),
+                Message = $"'{DriverSettingKeys.TransferCompression}' was requested more than once; only the first " +
+                          "request is used."
+            });
+        }
+        return keyed.Where(x => !IsTransferCompression(x)).ToList();
+
+        static bool IsTransferCompression(DriverSettingRequest? request) =>
+            request?.Key?.Trim() == DriverSettingKeys.TransferCompression;
+    }
+
+    /// <summary>
     /// The keyed requests negotiated before the typed operations (<see cref="KeyedDriverSettings.BeforeTypedOperationKeys"/>)
     /// or after them. A request with an empty key stays with the later pass, which reports it.
     /// </summary>
-    private static DriverProcessingOptions KeyedSubset(DriverProcessingOptions options, bool beforeTypedOperations) =>
+    private static DriverProcessingOptions KeyedSubset(List<DriverSettingRequest> keyed, bool beforeTypedOperations) =>
         new()
         {
-            Settings = (options.Settings ?? []).Where(request =>
+            Settings = keyed.Where(request =>
                     KeyedDriverSettings.BeforeTypedOperationKeys.Contains(request?.Key?.Trim() ?? "") ==
                     beforeTypedOperations)
                 .ToList()

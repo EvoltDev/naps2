@@ -142,7 +142,7 @@ internal class LocalTwainController : ITwainController
                     // The dry run comes last: it changes the source's configuration, which the reads above must not
                     // see. Nothing is acquired, and the source is closed right after.
                     var probe = options.ProbeDriverProcessing && !options.UseNativeUI
-                        ? TwainScanRunner.ApplyImageConfiguration(ds, options, _logger)
+                        ? Probe(ds, options)
                         : null;
 
                     return new ScanCaps
@@ -286,6 +286,51 @@ internal class LocalTwainController : ITwainController
     {
         var runner = new TwainScanRunner(_logger, TwainAppId, dsm, options, cancelToken, scanEvents, sink);
         await runner.Run();
+    }
+
+    /// <summary>
+    /// The capability dry run: the transfer mechanism first, as acquisition selects it, then the image configuration,
+    /// so settings the mechanism constrains (ICAP_COMPRESSION) are judged as the scan would see them.
+    /// </summary>
+    private DriverProcessingResult Probe(DataSource source, ScanOptions options)
+    {
+        var raw = options.ProbeRawAcquisition;
+        bool decodesCompressedTransfers;
+        string? transferFailure = null;
+        try
+        {
+            var mode = TwainScanRunner.ConfigureTransferMechanism(source, options.TwainOptions.TransferMode, raw,
+                _logger);
+            decodesCompressedTransfers = TwainScanRunner.DecodesCompressedTransfers(raw, mode);
+        }
+        catch (Exception ex)
+        {
+            // The scan itself would stop here. The dry run still reports the other settings, and no compressed
+            // transfer it could not decode, but it must not succeed.
+            _logger.LogDebug(ex, "TWAIN dry run could not select the transfer mechanism");
+            decodesCompressedTransfers = false;
+            transferFailure = ex.Message;
+        }
+        return WithTransferFailure(
+            TwainScanRunner.ApplyImageConfiguration(source, options, _logger, decodesCompressedTransfers),
+            transferFailure);
+    }
+
+    /// <summary>
+    /// Records that the scan could not select its transfer mechanism, ahead of any failure the configuration itself
+    /// reported, so the dry run does not succeed for a scan that would stop before acquiring.
+    /// </summary>
+    internal static DriverProcessingResult WithTransferFailure(DriverProcessingResult result, string? transferFailure)
+    {
+        if (transferFailure == null)
+        {
+            return result;
+        }
+        var reason = $"The scan cannot select its TWAIN transfer mechanism: {transferFailure}";
+        return result with
+        {
+            FailureReason = string.IsNullOrEmpty(result.FailureReason) ? reason : $"{reason} {result.FailureReason}"
+        };
     }
 }
 #endif
