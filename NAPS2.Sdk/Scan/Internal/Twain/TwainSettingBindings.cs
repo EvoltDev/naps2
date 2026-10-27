@@ -7,7 +7,8 @@ namespace NAPS2.Scan.Internal.Twain;
 /// specification header (twain.h).
 /// </summary>
 /// <remarks>
-/// The order groups dependencies: image processing (100s) before detection (200s) before paper handling (300s), and
+/// The order groups dependencies: transfer encoding (0s) before image processing (100s) before detection (200s) before
+/// paper handling (300s), and
 /// within a group a setting that constrains another is written first, such as the bit depth reduction method before
 /// the threshold.
 /// </remarks>
@@ -16,6 +17,8 @@ internal static class TwainSettingBindings
     private const string Protocol = "TWAIN";
 
     // Capability ids.
+    private const int ICapCompression = 0x0100;
+    private const int ICapJpegQuality = 0x1153;
     private const int ICapFilter = 0x1106;
     private const int ICapGamma = 0x1108;
     private const int ICapThreshold = 0x1123;
@@ -31,6 +34,14 @@ internal static class TwainSettingBindings
     private const int CapDoubleFeedDetectionSensitivity = 0x1041;
     private const int CapDoubleFeedDetectionResponse = 0x1042;
     private const int CapPaperHandling = 0x1043;
+
+    // TWCP_*. Only the compressions the raw memory transfer can decode are offered.
+    internal static readonly IReadOnlyDictionary<string, int> Compressions = new Dictionary<string, int>
+    {
+        ["none"] = 0, // TWCP_NONE
+        ["group4"] = 5, // TWCP_GROUP4
+        ["jpeg"] = 6 // TWCP_JPEG
+    };
 
     // TWBR_*
     internal static readonly IReadOnlyDictionary<string, int> BlackAndWhiteMethods = new Dictionary<string, int>
@@ -140,6 +151,19 @@ internal static class TwainSettingBindings
 
     public static IReadOnlyDictionary<string, NativeSettingBinding> Bindings { get; } = new[]
     {
+        // The quality only takes effect once JPEG compression is selected.
+        Named(DriverSettingKeys.TransferCompression, ICapCompression, "ICAP_COMPRESSION", 10, Compressions),
+        new NativeSettingBinding
+        {
+            Key = DriverSettingKeys.TransferJpegQuality,
+            Protocol = Protocol,
+            NativeId = ICapJpegQuality,
+            NativeName = "ICAP_JPEGQUALITY",
+            ValueType = NativeValueType.Int16,
+            Order = 20,
+            ToNative = IntegerToNative(0, 100),
+            FromNative = IntegerFromNative
+        },
         Named(DriverSettingKeys.BlackAndWhiteMethod, ICapBitDepthReduction, "ICAP_BITDEPTHREDUCTION", 100,
             BlackAndWhiteMethods),
         new NativeSettingBinding

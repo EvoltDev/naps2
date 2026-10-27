@@ -150,7 +150,11 @@ internal static class WiaSettingBindings
         [DriverSettingKeys.ImageFilter] = "WIA defines no standard image filter property.",
         [DriverSettingKeys.NoiseFilter] = "WIA defines no standard noise filter property.",
         [DriverSettingKeys.Sharpening] = "WIA defines no standard sharpening property.",
-        [DriverSettingKeys.PaperHandling] = "WIA defines no standard paper handling property."
+        [DriverSettingKeys.PaperHandling] = "WIA defines no standard paper handling property.",
+        [DriverSettingKeys.TransferCompression] =
+            "WIA transfer compression needs WIA_IPA_FORMAT, a CLSID property, chosen together with " +
+            "WIA_IPA_COMPRESSION; that pair is not bound yet.",
+        [DriverSettingKeys.TransferJpegQuality] = "WIA defines no standard JPEG quality property."
     }, Protocol);
 
     private static NativeSettingBinding Named(string key, int id, string name, int order,

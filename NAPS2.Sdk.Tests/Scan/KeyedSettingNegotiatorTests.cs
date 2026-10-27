@@ -48,6 +48,44 @@ public class KeyedSettingNegotiatorTests
     }
 
     [Fact]
+    public void TransferCompressionIsWrittenBeforeItsJpegQualityAndBeforeImageProcessing()
+    {
+        var access = new FakeAccess();
+        var options = Options(
+            (DriverSettingKeys.Gamma, DriverSettingValue.FromReal(2.2)),
+            (DriverSettingKeys.TransferJpegQuality, DriverSettingValue.FromInteger(75)),
+            (DriverSettingKeys.TransferCompression, DriverSettingValue.FromText("jpeg")));
+
+        var results = Apply(access, options);
+
+        Assert.Equal(["ICAP_COMPRESSION", "ICAP_JPEGQUALITY", "ICAP_GAMMA"], access.Writes);
+        Assert.All(results, x => Assert.Equal(DriverProcessingStatus.Applied, x.Status));
+        Assert.Equal("jpeg", results.Single(x => x.Name == DriverSettingKeys.TransferCompression).EffectiveValue);
+        Assert.Equal(75L, results.Single(x => x.Name == DriverSettingKeys.TransferJpegQuality).EffectiveValue);
+    }
+
+    [Theory]
+    [InlineData("none", 0)]
+    [InlineData("group4", 5)]
+    [InlineData("jpeg", 6)]
+    public void TransferCompressionWritesTheTwainCompressionConstant(string compression, int expected)
+    {
+        var binding = TwainSettingBindings.Bindings[DriverSettingKeys.TransferCompression];
+
+        Assert.Equal(expected, binding.ToNative(DriverSettingValue.FromText(compression)).Value);
+    }
+
+    [Fact]
+    public void TransferCompressionsTheRawTransferCannotDecodeAreRejected()
+    {
+        var binding = TwainSettingBindings.Bindings[DriverSettingKeys.TransferCompression];
+
+        Assert.NotNull(binding.ToNative(DriverSettingValue.FromText("lzw")).Error);
+        Assert.NotNull(TwainSettingBindings.Bindings[DriverSettingKeys.TransferJpegQuality]
+            .ToNative(DriverSettingValue.FromInteger(101)).Error);
+    }
+
+    [Fact]
     public void ReadBackHappensAfterAllWritesSoALaterWriteCanAdjustAnEarlierOne()
     {
         var access = new FakeAccess
