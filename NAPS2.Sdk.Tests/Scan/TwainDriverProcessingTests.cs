@@ -59,6 +59,25 @@ public class TwainDriverProcessingTests
         Assert.Empty(settings);
     }
 
+    [Fact]
+    public void ADuplicateRequestCannotStandInForARejectedCompression()
+    {
+        var keyed = new List<DriverSettingRequest>
+        {
+            Request(DriverSettingKeys.TransferCompression, DriverSettingValue.FromText("jpeg")),
+            Request(DriverSettingKeys.TransferCompression, DriverSettingValue.FromText("group4"))
+        };
+        var settings = new List<DriverProcessingSetting>();
+
+        var remaining = TwainDriverProcessing.WithoutUndecodableCompression(keyed,
+            new Dictionary<string, object?>(), settings, new List<string>());
+
+        Assert.Empty(remaining);
+        Assert.Equal(["jpeg", "group4"], settings.Select(x => x.RequestedValue));
+        Assert.All(settings, x => Assert.Equal(DriverProcessingStatus.Rejected, x.Status));
+        Assert.Contains("more than once", settings[1].Message);
+    }
+
     private static DriverSettingRequest Request(string key, DriverSettingValue value) =>
         new() { Key = key, Value = value };
 

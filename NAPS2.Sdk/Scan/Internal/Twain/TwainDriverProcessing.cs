@@ -123,8 +123,8 @@ internal static class TwainDriverProcessing
         ICollection<string> rejected)
     {
         // The first request for a key is the one negotiated; KeyedDriverSettings reports the others.
-        var request = keyed.FirstOrDefault(x => x?.Key?.Trim() == DriverSettingKeys.TransferCompression);
-        if (request?.Value?.ToObject() is not string compression || compression == "none")
+        var requests = keyed.Where(IsTransferCompression).ToList();
+        if (requests.FirstOrDefault()?.Value?.ToObject() is not string compression || compression == "none")
         {
             return keyed;
         }
@@ -139,7 +139,22 @@ internal static class TwainDriverProcessing
                       "as pixel rows, and a native transfer is always an uncompressed bitmap."
         });
         rejected.Add(DriverSettingKeys.TransferCompression);
-        return keyed.Where(x => !ReferenceEquals(x, request)).ToList();
+        // Every later request goes too: left behind, the next one would become the first and be negotiated.
+        foreach (var duplicate in requests.Skip(1))
+        {
+            settings.Add(new DriverProcessingSetting
+            {
+                Name = DriverSettingKeys.TransferCompression,
+                Status = DriverProcessingStatus.Rejected,
+                RequestedValue = duplicate?.Value?.ToObject(),
+                Message = $"'{DriverSettingKeys.TransferCompression}' was requested more than once; only the first " +
+                          "request is used."
+            });
+        }
+        return keyed.Where(x => !IsTransferCompression(x)).ToList();
+
+        static bool IsTransferCompression(DriverSettingRequest? request) =>
+            request?.Key?.Trim() == DriverSettingKeys.TransferCompression;
     }
 
     /// <summary>
